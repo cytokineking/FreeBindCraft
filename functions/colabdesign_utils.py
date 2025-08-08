@@ -153,7 +153,6 @@ def binder_hallucination(design_name, starting_pdb, chain, target_hotspot_residu
                     print("One-hot trajectory pLDDT good, continuing: "+str(onehot_plddt))
                     if advanced_settings["greedy_iterations"] > 0:
                         print("Stage 4: PSSM Semigreedy Optimisation")
-                        af_model.clear_best()
                         af_model.design_pssm_semigreedy(soft_iters=0, hard_iters=advanced_settings["greedy_iterations"], tries=greedy_tries, models=design_models, 
                                                         num_models=1, sample_models=advanced_settings["sample_models"], ramp_models=False, save_best=True)
 
@@ -246,9 +245,7 @@ def predict_binder_complex(prediction_model, binder_sequence, mpnn_design_name, 
     pass_af2_filters = True
     filter_failures = {}
 
-    if advanced_settings["cyclize_peptide"]:
-        # make macrocycle peptide
-        add_cyclic_offset(prediction_model)
+    # Removed cyclize_peptide offset in v1.5.2
 
     # start prediction per AF2 model, 2 are used by default due to masked templates
     for model_num in prediction_models:
@@ -317,9 +314,7 @@ def predict_binder_alone(prediction_model, binder_sequence, mpnn_design_name, le
     binder_sequence = re.sub("[^A-Z]", "", binder_sequence.upper())
     prediction_model.set_seq(binder_sequence)
 
-    if advanced_settings["cyclize_peptide"]:
-        # make macrocycle peptide
-        add_cyclic_offset(prediction_model)
+    # Removed cyclize_peptide offset in v1.5.2
 
     # predict each model separately
     for model_num in prediction_models:
@@ -357,6 +352,7 @@ def mpnn_gen_sequence(trajectory_pdb, binder_chain, trajectory_interface_residue
 
     if advanced_settings["mpnn_fix_interface"]:
         fixed_positions = 'A,' + trajectory_interface_residues
+        fixed_positions = fixed_positions.rstrip(",")
         print("Fixing interface residues: "+trajectory_interface_residues)
     else:
         fixed_positions = 'A'
@@ -365,7 +361,7 @@ def mpnn_gen_sequence(trajectory_pdb, binder_chain, trajectory_interface_residue
     mpnn_model.prep_inputs(pdb_filename=trajectory_pdb, chain=design_chains, fix_pos=fixed_positions, rm_aa=advanced_settings["omit_AAs"])
 
     # sample MPNN sequences in parallel
-    mpnn_sequences = mpnn_model.sample(temperature=advanced_settings["sampling_temp"], num=advanced_settings["num_seqs"], batch=advanced_settings["num_seqs"])
+    mpnn_sequences = mpnn_model.sample(temperature=advanced_settings["sampling_temp"], num=1, batch=advanced_settings["num_seqs"]) 
 
     return mpnn_sequences
 
