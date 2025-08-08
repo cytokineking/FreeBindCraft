@@ -1,7 +1,6 @@
-<<<<<<< HEAD
-# BindCraft (v1.5) with Optional PyRosetta Bypass
+# BindCraft (v1.52) with Optional PyRosetta Bypass
 
-This repository contains a modified version of Martin Pacesa's BindCraft (v1.5). The primary change is the introduction of an **optional PyRosetta bypass mechanism**.
+This repository contains a modified version of Martin Pacesa's BindCraft (v1.52). The primary change is the introduction of an **optional PyRosetta bypass mechanism**.
 
 For comprehensive details on the original BindCraft pipeline, features, advanced settings, and filter explanations, please refer to the **original BindCraft repository: [https://github.com/martinpacesa/BindCraft](https://github.com/martinpacesa/BindCraft)** and the [original preprint](https://www.biorxiv.org/content/10.1101/2024.09.30.615802).
 
@@ -280,4 +279,3 @@ Thanks to Lennart Nickel, Yehlin Cho, Casper Goverde, and Sergey Ovchinnikov for
  <li>Justas Dauparas's ProteinMPNN (https://github.com/dauparas/ProteinMPNN)</li>
  <li>PyRosetta (https://github.com/RosettaCommons/PyRosetta.notebooks)</li>
 </ul>
->>>>>>> upstream/main
