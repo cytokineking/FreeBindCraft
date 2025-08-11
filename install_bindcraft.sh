@@ -72,20 +72,23 @@ echo -e "Installing conda requirements\n"
 # Base packages (needed regardless of PyRosetta)
 BASE_PACKAGES="pip pandas matplotlib numpy<2.0.0 biopython scipy pdbfixer openmm seaborn libgfortran5 tqdm jupyter ffmpeg fsspec py3dmol chex dm-haiku flax<0.10.0 dm-tree joblib ml-collections immutabledict optax"
 
+# Pin JAX to stable version 0.6.0
+echo -e "Using JAX/jaxlib version 0.6.0 for stability\n"
+
 # Install packages with or without PyRosetta
 if [ "$install_pyrosetta" = true ]; then
     echo -e "Installing with PyRosetta\n"
     if [ -n "$cuda" ]; then
-        CONDA_OVERRIDE_CUDA="$cuda" $pkg_manager install $BASE_PACKAGES pyrosetta jaxlib=*=*cuda* jax cuda-nvcc cudnn -c conda-forge -c nvidia --channel https://conda.graylab.jhu.edu -y || { echo -e "Error: Failed to install conda packages with PyRosetta."; exit 1; }
+        CONDA_OVERRIDE_CUDA="$cuda" $pkg_manager install $BASE_PACKAGES pyrosetta "jaxlib=0.6.0=*cuda*" "jax=0.6.0" cuda-nvcc cudnn -c conda-forge -c nvidia --channel https://conda.graylab.jhu.edu -y || { echo -e "Error: Failed to install conda packages with PyRosetta."; exit 1; }
     else
-        $pkg_manager install $BASE_PACKAGES pyrosetta jaxlib jax cuda-nvcc cudnn -c conda-forge -c nvidia --channel https://conda.graylab.jhu.edu -y || { echo -e "Error: Failed to install conda packages with PyRosetta."; exit 1; }
+        $pkg_manager install $BASE_PACKAGES pyrosetta "jaxlib=0.6.0" "jax=0.6.0" cuda-nvcc cudnn -c conda-forge -c nvidia --channel https://conda.graylab.jhu.edu -y || { echo -e "Error: Failed to install conda packages with PyRosetta."; exit 1; }
     fi
 else
     echo -e "Installing without PyRosetta\n"
     if [ -n "$cuda" ]; then
-        CONDA_OVERRIDE_CUDA="$cuda" $pkg_manager install $BASE_PACKAGES jaxlib=*=*cuda* jax cuda-nvcc cudnn -c conda-forge -c nvidia -y || { echo -e "Error: Failed to install conda packages without PyRosetta."; exit 1; }
+        CONDA_OVERRIDE_CUDA="$cuda" $pkg_manager install $BASE_PACKAGES "jaxlib=0.6.0=*cuda*" "jax=0.6.0" cuda-nvcc cudnn -c conda-forge -c nvidia -y || { echo -e "Error: Failed to install conda packages without PyRosetta."; exit 1; }
     else
-        $pkg_manager install $BASE_PACKAGES jaxlib jax cuda-nvcc cudnn -c conda-forge -c nvidia -y || { echo -e "Error: Failed to install conda packages without PyRosetta."; exit 1; }
+        $pkg_manager install $BASE_PACKAGES "jaxlib=0.6.0" "jax=0.6.0" cuda-nvcc cudnn -c conda-forge -c nvidia -y || { echo -e "Error: Failed to install conda packages without PyRosetta."; exit 1; }
     fi
 fi
 
