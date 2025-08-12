@@ -7,8 +7,10 @@ import gc
 import numpy as np
 from collections import defaultdict
 from scipy.spatial import cKDTree
-from Bio.PDB import PDBParser, DSSP, Selection, PDBIO, Superimposer
+from Bio import BiopythonWarning
+from Bio.PDB import PDBParser, DSSP, Selection, Polypeptide, PDBIO, Superimposer
 from Bio.SeqUtils.ProtParam import ProteinAnalysis
+from Bio.PDB.Selection import unfold_entities
 from Bio.PDB.Polypeptide import is_aa
 
 # Global cache for DSSP results to reduce redundant calculations
