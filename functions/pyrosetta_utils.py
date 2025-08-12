@@ -3,6 +3,7 @@
 ####################################
 ### Import dependencies
 import os
+import gc
 import shutil
 import warnings
 import traceback
@@ -36,6 +37,15 @@ try:
 except ImportError:
     PYROSETTA_AVAILABLE = False
     # Suppress import-time warnings; runtime messaging is handled in bindcraft.py
+
+# Cache a single OpenMM ForceField instance to avoid repeated XML parsing per relaxation
+_OPENMM_FORCEFIELD_SINGLETON = None
+
+def _get_openmm_forcefield():
+    global _OPENMM_FORCEFIELD_SINGLETON
+    if _OPENMM_FORCEFIELD_SINGLETON is None:
+        _OPENMM_FORCEFIELD_SINGLETON = app.ForceField('amber14-all.xml', 'implicit/obc2.xml')
+    return _OPENMM_FORCEFIELD_SINGLETON
 
 # Helper function for k conversion
 def _k_kj_per_nm2(k_kcal_A2):
@@ -195,7 +205,8 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         fixer.addMissingHydrogens(7.0) # Add hydrogens at neutral pH
 
         # 2. Set up OpenMM ForceField, System, Integrator, and Simulation
-        forcefield = app.ForceField('amber14-all.xml', 'implicit/obc2.xml') 
+        # Reuse a module-level ForceField instance to avoid re-parsing XMLs each call
+        forcefield = _get_openmm_forcefield()
         
         system = forcefield.createSystem(fixer.topology, 
                                          nonbondedMethod=app.CutoffNonPeriodic, # Retain for OBC2 defined by XML
@@ -404,10 +415,22 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         # 5. Clean the output PDB
         clean_pdb(output_pdb_path)
 
+        # Explicitly delete heavy OpenMM objects to avoid cumulative slowdowns across many trajectories
+        try:
+            del positions
+        except Exception:
+            pass
+        try:
+            del simulation, integrator, system, restraint_force, lj_rep_custom_force, fixer
+        except Exception:
+            pass
+        gc.collect()
+
         return platform_name_used
 
     except Exception as e_om_relax:
         shutil.copy(pdb_file_path, output_pdb_path)
+        gc.collect()
         return platform_name_used
 
 # Rosetta interface scores
