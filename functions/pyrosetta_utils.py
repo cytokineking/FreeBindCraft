@@ -128,17 +128,18 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                  openmm_ramp_force_tolerance_kj_mol_nm=2.0, 
                  openmm_final_force_tolerance_kj_mol_nm=0.1,
                  restraint_k_kcal_mol_A2=3.0, 
-                 restraint_ramp_factors=(1.0, 0.5, 0.25, 0.0), # Factors to scale base restraint k
-                 md_steps_per_shake=10000, # MD steps for each shake
+                 restraint_ramp_factors=(1.0, 0.4, 0.0), # 3-stage restraint ramp factors
+                 md_steps_per_shake=5000, # MD steps for each shake (applied only to first two stages)
                  lj_rep_base_k_kj_mol=10.0, # Base strength for extra LJ repulsion (kJ/mol)
-                 lj_rep_ramp_factors=(0.0, 0.5, 1.5, 3.0)): # Factors to scale base LJ repulsion (ramp soft to hard)
+                 lj_rep_ramp_factors=(0.0, 1.5, 3.0)): # 3-stage LJ repulsion ramp factors (soft → hard)
     """
     Relaxes a PDB structure using OpenMM with L-BFGS minimizer.
     Uses PDBFixer to prepare the structure first.
     Applies backbone heavy-atom harmonic restraints (ramped down using restraint_ramp_factors) 
     and uses OBC2 implicit solvent.
     Includes an additional ramped LJ-like repulsive force (using lj_rep_ramp_factors) to help with initial clashes.
-    Includes short MD shakes between stages and accept-to-best position bookkeeping.
+    Includes short MD shakes for the first two ramp stages only (speed optimization).
+    Uses accept-to-best position bookkeeping across all stages.
     Aligns to original and copies B-factors.
     """
 
@@ -277,7 +278,7 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         simulation.context.setPositions(fixer.positions)
 
         # Optional Pre-Minimization Step (before main ramp loop)
-        # Perform if restraints or LJ repulsion are active, to stabilize before MD.
+        # Perform if restraints or LJ repulsion are active, to stabilize structure.
         if restraint_k_kcal_mol_A2 > 0 or lj_rep_base_k_kj_mol > 0:
             
             # Set LJ repulsion to zero for this initial minimization
@@ -292,15 +293,13 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                 restraint_force.setGlobalParameterDefaultValue(k_restraint_param_index, full_initial_restraint_k_val)
                 restraint_force.updateParametersInContext(simulation.context)
             
-            pre_min_initial_energy = simulation.context.getState(getEnergy=True).getPotentialEnergy()
             initial_min_tolerance = openmm_ramp_force_tolerance_kj_mol_nm * unit.kilojoule_per_mole / unit.nanometer
             simulation.minimizeEnergy(
                 tolerance=initial_min_tolerance,
                 maxIterations=openmm_max_iterations 
             )
-            pre_min_final_energy = simulation.context.getState(getEnergy=True).getPotentialEnergy()
 
-        # 3. Perform staged relaxation: ramp restraints, MD shakes, and minimization
+        # 3. Perform staged relaxation: ramp restraints, limited MD shakes, and minimization
         base_k_for_ramp_kcal = restraint_k_kcal_mol_A2
 
         # Determine number of stages based on provided ramp factors
@@ -338,15 +337,12 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                 restraint_force.setGlobalParameterDefaultValue(k_restraint_param_index, numeric_k_for_stage)
                 restraint_force.updateParametersInContext(simulation.context)
 
-            # MD Shake (always done before each minimization stage in the loop)
-            if md_steps_per_shake > 0:
+            # MD Shake only for first two ramp stages for speed-performance tradeoff
+            if md_steps_per_shake > 0 and i_stage_val < 2:
                 simulation.context.setVelocitiesToTemperature(300*unit.kelvin) # Reinitialize velocities
                 simulation.step(md_steps_per_shake)
-                energy_after_md = simulation.context.getState(getEnergy=True).getPotentialEnergy()
 
             # Minimization for the current stage
-            stage_initial_energy = simulation.context.getState(getEnergy=True).getPotentialEnergy()
-            
             # Set force tolerance for current stage
             if i_stage_val == num_stages - 1: # Final stage
                 current_force_tolerance = openmm_final_force_tolerance_kj_mol_nm
@@ -366,8 +362,6 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         # After all stages, set positions to the best ones found
         if best_positions is not None:
             simulation.context.setPositions(best_positions)
-
-        final_energy = simulation.context.getState(getEnergy=True).getPotentialEnergy()
 
         # 4. Save the relaxed structure
         positions = simulation.context.getState(getPositions=True).getPositions()
