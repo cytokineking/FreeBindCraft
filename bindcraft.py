@@ -2,8 +2,10 @@
 ###################### BindCraft Run
 ####################################
 ### Import dependencies
+import gc
 from functions import *
 from functions.generic_utils import insert_data # Explicit import for insert_data
+from functions.biopython_utils import clear_dssp_cache # Explicit import for DSSP cache management
 
 # Check if JAX-capable GPU is available, otherwise exit
 check_jax_gpu()
@@ -516,6 +518,9 @@ while True:
                         
                         # increase MPNN design number
                         mpnn_n += 1
+                        
+                        # Force garbage collection after each MPNN design to prevent file descriptor accumulation
+                        gc.collect()
 
                         # if enough mpnn sequences of the same trajectory pass filters then stop
                         if accepted_mpnn >= advanced_settings["max_mpnn_sequences"]:
@@ -551,6 +556,13 @@ while True:
 
         # increase trajectory number
         trajectory_n += 1
+        
+        # Force garbage collection and clear DSSP cache every 10 trajectories to prevent memory/fd accumulation
+        if trajectory_n % 10 == 0:
+            clear_dssp_cache()
+            print(f"Cleared DSSP cache after {trajectory_n} trajectories")
+        
+        # Force garbage collection more frequently to prevent file descriptor accumulation
         gc.collect()
 
 ### Script finished

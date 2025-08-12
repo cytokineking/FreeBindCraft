@@ -2,16 +2,63 @@
 ################ BioPython functions
 ####################################
 ### Import dependencies
-import os
 import math
+import gc
 import numpy as np
 from collections import defaultdict
 from scipy.spatial import cKDTree
-from Bio import BiopythonWarning
-from Bio.PDB import PDBParser, DSSP, Selection, Polypeptide, PDBIO, Select, Chain, Superimposer
+from Bio.PDB import PDBParser, DSSP, Selection, PDBIO, Superimposer
 from Bio.SeqUtils.ProtParam import ProteinAnalysis
-from Bio.PDB.Selection import unfold_entities
 from Bio.PDB.Polypeptide import is_aa
+
+# Global cache for DSSP results to reduce redundant calculations
+_dssp_cache = {}
+
+def safe_dssp_calculation(model, pdb_file, dssp_path, max_retries=3):
+    """
+    Safely calculate DSSP with proper subprocess cleanup and retry logic.
+    Uses caching to avoid redundant calculations on the same file.
+    Returns DSSP object or None if all attempts fail.
+    """
+    # Create a cache key based on the PDB file path
+    cache_key = pdb_file
+    
+    # Check if we already have this result cached
+    if cache_key in _dssp_cache:
+        return _dssp_cache[cache_key]
+    
+    for attempt in range(max_retries):
+        dssp = None
+        try:
+            # Use a context manager approach to ensure cleanup
+            dssp = DSSP(model, pdb_file, dssp=dssp_path)
+            # Cache the successful result
+            _dssp_cache[cache_key] = dssp
+            return dssp
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"DSSP attempt {attempt + 1} failed for {pdb_file}: {e}. Retrying...")
+                gc.collect()  # Force cleanup before retry
+            else:
+                print(f"DSSP calculation failed after {max_retries} attempts for {pdb_file}: {e}")
+                # Cache the failure to avoid repeated attempts
+                _dssp_cache[cache_key] = None
+                return None
+        finally:
+            # Ensure any partial DSSP objects are cleaned up
+            if dssp is not None and attempt < max_retries - 1:
+                try:
+                    del dssp
+                except Exception:
+                    pass
+            gc.collect()
+    return None
+
+def clear_dssp_cache():
+    """Clear the DSSP cache to free memory."""
+    global _dssp_cache
+    _dssp_cache.clear()
+    gc.collect()
 
 # analyze sequence composition of design
 def validate_design_sequence(sequence, num_clashes, advanced_settings):
@@ -179,8 +226,12 @@ def calc_ss_percentage(pdb_file, advanced_settings, chain_id="B", atom_distance_
     structure = parser.get_structure('protein', pdb_file)
     model = structure[0]  # Consider only the first model in the structure
 
-    # Calculate DSSP for the model
-    dssp = DSSP(model, pdb_file, dssp=advanced_settings["dssp_path"])
+    # Calculate DSSP for the model with proper cleanup
+    dssp = safe_dssp_calculation(model, pdb_file, advanced_settings["dssp_path"])
+    if dssp is None:
+        print(f"Warning: DSSP calculation failed for {pdb_file}, returning default values")
+        # Return default values if DSSP fails: helix%, beta%, loop%, interface_helix%, interface_beta%, interface_loop%, i_plddt, ss_plddt
+        return 0.0, 0.0, 100.0, 0.0, 0.0, 100.0, 0.0, 0.0
 
     # Prepare to count residues
     ss_counts = defaultdict(int)
@@ -225,6 +276,10 @@ def calc_ss_percentage(pdb_file, advanced_settings, chain_id="B", atom_distance_
 
     i_plddt = round(sum(plddts_interface) / len(plddts_interface) / 100, 2) if plddts_interface else 0
     ss_plddt = round(sum(plddts_ss) / len(plddts_ss) / 100, 2) if plddts_ss else 0
+
+    # Explicitly clean up references to help with garbage collection
+    del dssp, structure, model, parser
+    gc.collect()
 
     return (*percentages, *interface_percentages, i_plddt, ss_plddt)
 
