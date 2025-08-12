@@ -88,8 +88,8 @@ if __name__ == "__main__":
     print(f"Calling openmm_relax function for {openmm_output_pdb_path}...")
     try:
         # Call the imported openmm_relax function
-        openmm_relax(args.input_pdb_path, openmm_output_pdb_path, use_gpu_relax=True) # Attempt GPU relaxation (CUDA -> OpenCL -> CPU fallback)
-        print(f"openmm_relax function completed.")
+        used_platform = openmm_relax(args.input_pdb_path, openmm_output_pdb_path, use_gpu_relax=True) # Attempt GPU relaxation (CUDA -> OpenCL -> CPU fallback)
+        print(f"openmm_relax function completed. Platform used: {used_platform}")
         if os.path.exists(openmm_output_pdb_path):
             print(f"OpenMM Relaxed PDB saved to: {openmm_output_pdb_path}")
         else:

@@ -141,6 +141,11 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
     Includes short MD shakes for the first two ramp stages only (speed optimization).
     Uses accept-to-best position bookkeeping across all stages.
     Aligns to original and copies B-factors.
+    
+    Returns
+    -------
+    platform_name_used : str or None
+        Name of the OpenMM platform actually used (e.g., 'CUDA', 'OpenCL', or 'CPU').
     """
 
     best_energy = float('inf') * unit.kilojoule_per_mole # Initialize with units
@@ -399,8 +404,11 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         # 5. Clean the output PDB
         clean_pdb(output_pdb_path)
 
+        return platform_name_used
+
     except Exception as e_om_relax:
         shutil.copy(pdb_file_path, output_pdb_path)
+        return platform_name_used
 
 # Rosetta interface scores
 def score_interface(pdb_file, binder_chain="B", use_pyrosetta=True):
