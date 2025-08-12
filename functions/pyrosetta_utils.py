@@ -133,7 +133,7 @@ def _create_backbone_restraint_force(system, fixer, restraint_k_kcal_mol_A2):
     return restraint_force, k_restraint_param_index
 
 def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True, 
-                 openmm_max_iterations=0, # Default: run till tolerance
+                 openmm_max_iterations=1000, # Safety cap per stage to avoid stalls (set 0 for unlimited)
                  # Default force tolerances for ramp stages (kJ/mol/nm)
                  openmm_ramp_force_tolerance_kj_mol_nm=2.0, 
                  openmm_final_force_tolerance_kj_mol_nm=0.1,
@@ -269,7 +269,10 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                 current_platform_obj = Platform.getPlatformByName(p_name_to_try)
                 if p_name_to_try == 'CUDA':
                     current_properties = {'CudaPrecision': 'mixed'}
-                # For OpenCL and CPU, current_properties remains empty, which is fine.
+                elif p_name_to_try == 'OpenCL':
+                    # Prefer single precision for speed on OpenCL devices
+                    current_properties = {'OpenCLPrecision': 'single'}
+                # For CPU, current_properties remains empty, which is fine.
                 
                 # Attempt to create the Simulation object
                 simulation = app.Simulation(fixer.topology, system, integrator, current_platform_obj, current_properties)
@@ -366,9 +369,42 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                 current_force_tolerance = openmm_ramp_force_tolerance_kj_mol_nm
             force_tolerance_quantity = current_force_tolerance * unit.kilojoule_per_mole / unit.nanometer
             
-            simulation.minimizeEnergy(tolerance=force_tolerance_quantity, 
-                                     maxIterations=openmm_max_iterations)
-            stage_final_energy = simulation.context.getState(getEnergy=True).getPotentialEnergy()
+            # Chunked minimization to avoid pathological stalls: run in small blocks and early-stop
+            # if energy improvement becomes negligible
+            per_call_max_iterations = 200 if (openmm_max_iterations == 0 or openmm_max_iterations > 200) else openmm_max_iterations
+            remaining_iterations = openmm_max_iterations
+            small_improvement_streak = 0
+            last_energy = simulation.context.getState(getEnergy=True).getPotentialEnergy()
+
+            while True:
+                simulation.minimizeEnergy(tolerance=force_tolerance_quantity,
+                                          maxIterations=per_call_max_iterations)
+                current_energy = simulation.context.getState(getEnergy=True).getPotentialEnergy()
+
+                # Check improvement magnitude
+                try:
+                    energy_improvement = last_energy - current_energy
+                    if energy_improvement < (0.1 * unit.kilojoule_per_mole):
+                        small_improvement_streak += 1
+                    else:
+                        small_improvement_streak = 0
+                except Exception:
+                    # If unit math fails for any reason, break conservatively
+                    small_improvement_streak = 3
+
+                last_energy = current_energy
+
+                # Decrement remaining iterations if bounded
+                if openmm_max_iterations > 0:
+                    remaining_iterations -= per_call_max_iterations
+                    if remaining_iterations <= 0:
+                        break
+
+                # Early stop if improvement is consistently negligible
+                if small_improvement_streak >= 3:
+                    break
+
+            stage_final_energy = last_energy
 
             # Accept-to-best bookkeeping
             if stage_final_energy < best_energy:
