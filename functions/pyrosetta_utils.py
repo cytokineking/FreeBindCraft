@@ -35,7 +35,7 @@ try:
     PYROSETTA_AVAILABLE = True
 except ImportError:
     PYROSETTA_AVAILABLE = False
-    warnings.warn("PyRosetta not available, using Biopython fallbacks and OpenMM relaxation.")
+    # Suppress import-time warnings; runtime messaging is handled in bindcraft.py
 
 # Helper function for k conversion
 def _k_kj_per_nm2(k_kcal_A2):

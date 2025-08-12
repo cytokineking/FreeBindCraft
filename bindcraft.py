@@ -84,19 +84,20 @@ create_dataframe(rejected_mpnn_full_stats_csv, rejected_stats_columns)
 ### initialise PyRosetta if not disabled
 use_pyrosetta = False
 
-if not args.no_pyrosetta:
+if args.no_pyrosetta:
+    # Quiet when user explicitly disables PyRosetta
+    print("Running in PyRosetta-free mode as requested by --no-pyrosetta flag.")
+else:
     if 'PYROSETTA_AVAILABLE' in globals() and PYROSETTA_AVAILABLE and pr is not None:
         try:
             pr.init(f'-ignore_unrecognized_res -ignore_zero_occupancy -mute all -holes:dalphaball {advanced_settings["dalphaball_path"]} -corrections::beta_nov16 true -relax:default_repeats 1')
             print("PyRosetta initialized successfully.")
             use_pyrosetta = True
         except Exception as e:
-            print(f"Warning: PyRosetta initialization failed: {e}")
-            print("Proceeding in PyRosetta-free mode.")
+            print(f"PyRosetta detected but failed to initialize: {e}")
+            print("Falling back to OpenMM and Biopython routines.")
     else:
-        print("PyRosetta not available. Proceeding in PyRosetta-free mode.")
-else:
-    print("Running in PyRosetta-free mode as requested by --no-pyrosetta flag.")
+        print("PyRosetta not found. Using OpenMM and Biopython routines.")
 
 print(f"Running binder design for target {settings_file}")
 print(f"Design settings used: {advanced_file}")
