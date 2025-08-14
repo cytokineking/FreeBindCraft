@@ -619,19 +619,22 @@ def score_interface(pdb_file, binder_chain="B", use_pyrosetta=True):
                 sr_target_mono.compute(target_only_model, level='A')
                 target_sasa_monomer = _chain_total_sasa(target_only_chain)
 
-        except Exception:
+        except Exception as e_sasa:
             # Keep safe defaults if SASA computation fails
+            print(f"[Biopython-SASA] ERROR for {pdb_file}: {e_sasa}")
             surface_hydrophobicity_fraction = 0.30
             binder_sasa_in_complex = 0.0
             binder_sasa_monomer = 0.0
+            target_sasa_in_complex = 0.0
+            target_sasa_monomer = 0.0
 
         # Compute buried SASA: binder-side and total (binder + target)
         interface_binder_dSASA = max(binder_sasa_monomer - binder_sasa_in_complex, 0.0)
         interface_target_dSASA = 0.0
         try:
             interface_target_dSASA = max(target_sasa_monomer - target_sasa_in_complex, 0.0)
-        except Exception:
-            pass
+        except Exception as e_idsasa:
+            print(f"[Biopython-SASA] WARN interface_target_dSASA for {pdb_file}: {e_idsasa}")
         interface_total_dSASA = interface_binder_dSASA + interface_target_dSASA
         interface_binder_fraction = (interface_binder_dSASA / binder_sasa_monomer * 100.0) if binder_sasa_monomer > 0.0 else 0.0
 
