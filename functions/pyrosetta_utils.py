@@ -16,6 +16,7 @@ from pdbfixer import PDBFixer
 # Bio.PDB needed for B-factor handling.
 # PDBParser, PDBIO, Polypeptide are used from Bio.PDB.
 from Bio.PDB import PDBParser, PDBIO, Polypeptide
+from Bio.PDB.Polypeptide import three_to_one
 from Bio.PDB.SASA import ShrakeRupley
 
 # Conditionally import PyRosetta - will be available if initialized successfully
@@ -588,7 +589,7 @@ def score_interface(pdb_file, binder_chain="B", use_pyrosetta=True):
                         residue_sasa += getattr(atom, 'sasa', 0.0)
                     # Convert to one-letter for RSA lookup
                     try:
-                        aa_one = Polypeptide.three_to_one(residue.get_resname())
+                        aa_one = three_to_one(residue.get_resname())
                     except KeyError:
                         continue
                     max_asa = _MAX_ASA.get(aa_one)
