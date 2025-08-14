@@ -133,6 +133,14 @@ def _create_backbone_restraint_force(system, fixer, restraint_k_kcal_mol_A2):
 # Chothia/NACCESS-like atomic radii (heavy atoms dominate SASA)
 R_CHOTHIA = {"H": 1.20, "C": 1.70, "N": 1.55, "O": 1.52, "S": 1.80}
 
+# Max ASA (Tien et al. 2013, approximate; for RSA calculation)
+_MAX_ASA = {
+    'A': 121.0, 'R': 265.0, 'N': 187.0, 'D': 187.0, 'C': 148.0,
+    'Q': 214.0, 'E': 214.0, 'G': 97.0,  'H': 216.0, 'I': 195.0,
+    'L': 191.0, 'K': 230.0, 'M': 203.0, 'F': 228.0, 'P': 154.0,
+    'S': 143.0, 'T': 163.0, 'W': 264.0, 'Y': 255.0, 'V': 165.0,
+}
+
 # Residue-specific polar carbons to exclude from hydrophobic SASA
 _POLAR_CARBONS = {
     "ASP": {"CG"},
@@ -559,6 +567,36 @@ def score_interface(pdb_file, binder_chain="B", use_pyrosetta=True):
                 sr_mono.compute(binder_only_chain, level='A')
                 binder_sasa_monomer = _chain_total_sasa(binder_only_chain)
                 binder_hsasa_monomer = _chain_hydrophobic_sasa(binder_only_chain)
+                # Approximate Rosetta LayerSelector-based surface hydrophobicity by residue-level RSA
+                # Build per-residue SASA from atom-level SASA
+                hydrophobic_residue_set = set('ACFILMPVWY')
+                num_surface_residues = 0
+                num_hydrophobic_surface_residues = 0
+                for residue in binder_only_chain:
+                    if not Polypeptide.is_aa(residue, standard=True):
+                        continue
+                    # Residue SASA from atomic SASA
+                    residue_sasa = 0.0
+                    for atom in residue.get_atoms():
+                        residue_sasa += getattr(atom, 'sasa', 0.0)
+                    # Convert to one-letter for RSA lookup
+                    try:
+                        aa_one = Polypeptide.three_to_one(residue.get_resname())
+                    except KeyError:
+                        continue
+                    max_asa = _MAX_ASA.get(aa_one)
+                    if not max_asa or max_asa <= 0:
+                        continue
+                    rsa = residue_sasa / max_asa
+                    # Surface cutoff (empirical). 0.25 gives values comparable to Rosetta LayerSelector surface.
+                    if rsa >= 0.25:
+                        num_surface_residues += 1
+                        if aa_one in hydrophobic_residue_set:
+                            num_hydrophobic_surface_residues += 1
+                if num_surface_residues > 0:
+                    surface_hydrophobicity_fraction = num_hydrophobic_surface_residues / num_surface_residues
+                else:
+                    surface_hydrophobicity_fraction = 0.0
             else:
                 binder_hsasa_monomer = 0.0
 
