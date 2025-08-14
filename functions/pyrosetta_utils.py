@@ -558,13 +558,20 @@ def score_interface(pdb_file, binder_chain="B", use_pyrosetta=True):
                 target_chain_in_complex = complex_model[target_chain_id]
                 target_sasa_in_complex = _chain_total_sasa(target_chain_in_complex)
 
-            # Binder monomer SASA (compute on binder chain entity alone)
-            binder_only_structure = parser.get_structure('binder_only', pdb_file)
-            binder_only_model = binder_only_structure[0]
-            if binder_chain in binder_only_model:
-                binder_only_chain = binder_only_model[binder_chain]
+            # Binder monomer SASA (need to create a new structure with ONLY the binder chain)
+            # Otherwise other chains in the model will still occlude during SASA computation
+            from Bio.PDB import Structure, Model
+            binder_only_structure = Structure.Structure('binder_only')
+            binder_only_model = Model.Model(0)
+            if binder_chain in complex_model:
+                # Deep copy the chain to avoid modifying the original
+                import copy
+                binder_only_chain = copy.deepcopy(complex_model[binder_chain])
+                binder_only_model.add(binder_only_chain)
+                binder_only_structure.add(binder_only_model)
                 sr_mono = ShrakeRupley(probe_radius=1.40, n_points=960, radii_dict=R_CHOTHIA)
-                sr_mono.compute(binder_only_chain, level='A')
+                # Now compute on a model that contains ONLY the binder chain
+                sr_mono.compute(binder_only_model, level='A')
                 binder_sasa_monomer = _chain_total_sasa(binder_only_chain)
                 binder_hsasa_monomer = _chain_hydrophobic_sasa(binder_only_chain)
                 # Approximate Rosetta LayerSelector-based surface hydrophobicity by residue-level RSA
@@ -600,17 +607,17 @@ def score_interface(pdb_file, binder_chain="B", use_pyrosetta=True):
             else:
                 binder_hsasa_monomer = 0.0
 
-            # Target monomer SASA (compute on target chain entity alone)
+            # Target monomer SASA (need to create a new structure with ONLY the target chain)
             target_sasa_monomer = 0.0
-            target_only_structure = parser.get_structure('target_only', pdb_file)
-            target_only_model = target_only_structure[0]
-            if target_chain_id in target_only_model:
-                target_only_chain = target_only_model[target_chain_id]
+            target_only_structure = Structure.Structure('target_only')
+            target_only_model = Model.Model(0)
+            if target_chain_id in complex_model:
+                target_only_chain = copy.deepcopy(complex_model[target_chain_id])
+                target_only_model.add(target_only_chain)
+                target_only_structure.add(target_only_model)
                 sr_target_mono = ShrakeRupley(probe_radius=1.40, n_points=960, radii_dict=R_CHOTHIA)
-                sr_target_mono.compute(target_only_chain, level='A')
+                sr_target_mono.compute(target_only_model, level='A')
                 target_sasa_monomer = _chain_total_sasa(target_only_chain)
-
-            surface_hydrophobicity_fraction = (binder_hsasa_monomer / binder_sasa_monomer) if binder_sasa_monomer > 0.0 else 0.0
 
         except Exception:
             # Keep safe defaults if SASA computation fails
