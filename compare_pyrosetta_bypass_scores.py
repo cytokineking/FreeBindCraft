@@ -17,6 +17,7 @@ If --pdb-dir is omitted, the script will prompt for it.
 
 import os
 import sys
+import time
 import argparse
 import json
 import pandas as pd
@@ -28,12 +29,16 @@ from functions.biopython_utils import calculate_clash_score
 def try_init_pyrosetta(dalphaball_path: str) -> bool:
     """Attempt to initialize PyRosetta with sane defaults. Returns True on success, False otherwise."""
     if not PYROSETTA_AVAILABLE or pr is None:
+        print("PyRosetta not available in this environment; using Biopython-only metrics.", flush=True)
         return False
     init_flags = f"-ignore_unrecognized_res -ignore_zero_occupancy -mute all -holes:dalphaball {dalphaball_path} -corrections::beta_nov16 true -relax:default_repeats 1"
     try:
+        print(f"Attempting to initialize PyRosetta with DAlphaBall at: {dalphaball_path}", flush=True)
         pr.init(init_flags)
+        print("PyRosetta initialized successfully.", flush=True)
         return True
     except Exception:
+        print("Failed to initialize PyRosetta; will continue with Biopython-only metrics.", flush=True)
         return False
 
 
@@ -47,6 +52,8 @@ def score_one_pdb(pdb_path: str, binder_chain: str, enable_pyrosetta: bool) -> d
 
     # Biopython (PyRosetta-free) scores
     try:
+        t0 = time.time()
+        print(f"[Bypass] Scoring {row['File']} (Biopython)...", flush=True)
         bypass_scores, bypass_interface_aa, bypass_interface_residues = score_interface(
             pdb_path, binder_chain=binder_chain, use_pyrosetta=False
         )
@@ -55,12 +62,16 @@ def score_one_pdb(pdb_path: str, binder_chain: str, enable_pyrosetta: bool) -> d
             row[f"bypass_{k}"] = v
         row["bypass_InterfaceAAs"] = json.dumps(bypass_interface_aa)
         row["bypass_InterfaceResidues"] = bypass_interface_residues
+        print(f"[Bypass] Done {row['File']} in {time.time()-t0:.2f}s", flush=True)
     except Exception as e:
         row["bypass_error"] = str(e)
+        print(f"[Bypass] ERROR {row['File']}: {e}", flush=True)
 
     # PyRosetta scores (if requested and available)
     if enable_pyrosetta:
         try:
+            t0 = time.time()
+            print(f"[Rosetta] Scoring {row['File']} (PyRosetta)...", flush=True)
             rosetta_scores, rosetta_interface_aa, rosetta_interface_residues = score_interface(
                 pdb_path, binder_chain=binder_chain, use_pyrosetta=True
             )
@@ -68,18 +79,24 @@ def score_one_pdb(pdb_path: str, binder_chain: str, enable_pyrosetta: bool) -> d
                 row[f"rosetta_{k}"] = v
             row["rosetta_InterfaceAAs"] = json.dumps(rosetta_interface_aa)
             row["rosetta_InterfaceResidues"] = rosetta_interface_residues
+            print(f"[Rosetta] Done {row['File']} in {time.time()-t0:.2f}s", flush=True)
         except Exception as e:
             row["rosetta_error"] = str(e)
+            print(f"[Rosetta] ERROR {row['File']}: {e}", flush=True)
     else:
         row["rosetta_unavailable"] = True
 
     # Add clash counts (common reference metrics)
     try:
+        t0 = time.time()
         row["Clashes_AllAtoms"] = int(calculate_clash_score(pdb_path, threshold=2.4, only_ca=False))
+        print(f"[Clashes] All atoms: {row['Clashes_AllAtoms']} ({time.time()-t0:.2f}s)", flush=True)
     except Exception:
         row["Clashes_AllAtoms"] = None
     try:
+        t0 = time.time()
         row["Clashes_CAOnly"] = int(calculate_clash_score(pdb_path, threshold=2.5, only_ca=True))
+        print(f"[Clashes] CA-only: {row['Clashes_CAOnly']} ({time.time()-t0:.2f}s)", flush=True)
     except Exception:
         row["Clashes_CAOnly"] = None
 
@@ -131,21 +148,26 @@ def main():
         dalphaball_path = os.path.join(repo_root, "functions", "DAlphaBall.gcc")
         enable_pyrosetta = try_init_pyrosetta(dalphaball_path)
         if not enable_pyrosetta:
-            print("Warning: PyRosetta unavailable or failed to initialize; proceeding with Biopython-only metrics.")
+            print("Warning: PyRosetta unavailable or failed to initialize; proceeding with Biopython-only metrics.", flush=True)
 
     pdb_files = collect_pdbs(pdb_dir, recursive=args.recursive)
     if not pdb_files:
-        print(f"No PDB files found in {pdb_dir} (recursive={args.recursive}).")
+        print(f"No PDB files found in {pdb_dir} (recursive={args.recursive}).", flush=True)
         sys.exit(0)
+    print(f"Found {len(pdb_files)} PDBs in {pdb_dir} (recursive={args.recursive}). Binder chain: {args.binder_chain}", flush=True)
 
     rows = []
-    for pdb_path in pdb_files:
+    total = len(pdb_files)
+    for idx, pdb_path in enumerate(pdb_files, start=1):
+        print("")
+        print(f"=== [{idx}/{total}] Processing: {os.path.basename(pdb_path)} ===", flush=True)
         row = score_one_pdb(pdb_path, binder_chain=args.binder_chain, enable_pyrosetta=enable_pyrosetta)
         rows.append(row)
 
     df = pd.DataFrame(rows)
     df.to_csv(out_csv, index=False)
-    print(f"Wrote {len(df)} rows to {out_csv}")
+    print("")
+    print(f"Wrote {len(df)} rows to {out_csv}", flush=True)
 
 
 if __name__ == "__main__":
