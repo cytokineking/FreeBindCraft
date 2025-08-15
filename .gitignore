@@ -3,3 +3,5 @@ BindCraft-original/
 .DS_Store
 relax_amber.ipynb
 BindCraft-main-v1.5.code-workspace
+**/__pycache__/
+
