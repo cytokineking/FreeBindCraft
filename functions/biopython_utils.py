@@ -2,6 +2,8 @@
 ################ BioPython functions
 ####################################
 ### Import dependencies
+import os
+import stat
 import math
 import gc
 import numpy as np
@@ -32,8 +34,30 @@ def safe_dssp_calculation(model, pdb_file, dssp_path, max_retries=3):
     for attempt in range(max_retries):
         dssp = None
         try:
-            # Use a context manager approach to ensure cleanup
-            dssp = DSSP(model, pdb_file, dssp=dssp_path)
+            # Ensure provided dssp_path is executable if it is a file path
+            if isinstance(dssp_path, str) and os.path.isfile(dssp_path):
+                try:
+                    if not os.access(dssp_path, os.X_OK):
+                        st = os.stat(dssp_path)
+                        os.chmod(dssp_path, st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                except Exception:
+                    pass
+
+            # Primary attempt with configured path
+            try:
+                dssp = DSSP(model, pdb_file, dssp=dssp_path)
+            except Exception as primary_error:
+                # Fallback to system-installed mkdssp/dssp if available on PATH
+                last_error = primary_error
+                for alt_cmd in ("mkdssp", "dssp"):
+                    try:
+                        dssp = DSSP(model, pdb_file, dssp=alt_cmd)
+                        last_error = None
+                        break
+                    except Exception as e_alt:
+                        last_error = e_alt
+                if dssp is None and last_error is not None:
+                    raise last_error
             # Cache the successful result
             _dssp_cache[cache_key] = dssp
             return dssp

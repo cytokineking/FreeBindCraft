@@ -9,6 +9,7 @@ import shutil
 import zipfile
 import random
 import math
+import stat
 import pandas as pd
 import numpy as np
 
@@ -252,7 +253,39 @@ def perform_advanced_settings_check(advanced_settings, bindcraft_folder):
     elif isinstance(advanced_settings["omit_AAs"], str):
         advanced_settings["omit_AAs"] = advanced_settings["omit_AAs"].strip()
 
+    # Ensure required executables are present and executable (chmod +x if needed)
+    _ensure_required_executables(advanced_settings, bindcraft_folder)
+
     return advanced_settings
+
+def _ensure_required_executables(advanced_settings, bindcraft_folder):
+    """
+    Ensure bundled helper binaries have the executable bit set.
+    We avoid raising if files are missing; callers decide presence.
+    """
+    try:
+        # DSSP (bundled path)
+        dssp_path = advanced_settings.get("dssp_path") or os.path.join(bindcraft_folder, 'functions', 'dssp')
+        if isinstance(dssp_path, str) and os.path.isfile(dssp_path):
+            st = os.stat(dssp_path)
+            if not (st.st_mode & stat.S_IXUSR):
+                try:
+                    os.chmod(dssp_path, st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                except Exception:
+                    pass
+
+        # DAlphaBall (only relevant if PyRosetta is used)
+        dalphaball_path = advanced_settings.get("dalphaball_path") or os.path.join(bindcraft_folder, 'functions', 'DAlphaBall.gcc')
+        if isinstance(dalphaball_path, str) and os.path.isfile(dalphaball_path):
+            st = os.stat(dalphaball_path)
+            if not (st.st_mode & stat.S_IXUSR):
+                try:
+                    os.chmod(dalphaball_path, st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                except Exception:
+                    pass
+    except Exception:
+        # Never crash on permission fix attempts
+        pass
 
 # Load settings from JSONs
 def load_json_settings(settings_json, filters_json, advanced_json):
