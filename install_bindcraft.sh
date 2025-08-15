@@ -119,6 +119,11 @@ echo -e "Installing ColabDesign\n"
 pip3 install git+https://github.com/sokrypton/ColabDesign.git --no-deps || { echo -e "Error: Failed to install ColabDesign"; exit 1; }
 python -c "import colabdesign" >/dev/null 2>&1 || { echo -e "Error: colabdesign module not found after installation"; exit 1; }
 
+# install SCASA for shape complementarity calculations
+echo -e "Installing SCASA for shape complementarity calculations\n"
+pip3 install git+https://github.com/t-whalley/SCASA.git || { echo -e "Error: Failed to install SCASA"; exit 1; }
+python -c "import scasa" >/dev/null 2>&1 || { echo -e "Error: scasa module not found after installation"; exit 1; }
+
 # AlphaFold2 weights
 echo -e "Downloading AlphaFold2 model weights \n"
 params_dir="${install_dir}/params"
