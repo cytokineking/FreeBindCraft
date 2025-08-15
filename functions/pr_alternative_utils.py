@@ -571,8 +571,8 @@ def biopython_score_interface(pdb_file, binder_chain="B"):
 
         # Binder monomer SASA (need to create a new structure with ONLY the binder chain)
         # Otherwise other chains in the model will still occlude during SASA computation
-        binder_only_structure = Structure('binder_only')
-        binder_only_model = Model(0)
+        binder_only_structure = Structure.Structure('binder_only')
+        binder_only_model = Model.Model(0)
         if binder_chain in complex_model:
             # Deep copy the chain to avoid modifying the original
             binder_only_chain = copy.deepcopy(complex_model[binder_chain])
@@ -617,8 +617,8 @@ def biopython_score_interface(pdb_file, binder_chain="B"):
 
         # Target monomer SASA (need to create a new structure with ONLY the target chain)
         target_sasa_monomer = 0.0
-        target_only_structure = Structure('target_only')
-        target_only_model = Model(0)
+        target_only_structure = Structure.Structure('target_only')
+        target_only_model = Model.Model(0)
         if target_chain_id in complex_model:
             target_only_chain = copy.deepcopy(complex_model[target_chain_id])
             target_only_model.add(target_only_chain)
