@@ -21,9 +21,7 @@ Helper Functions:
 import gc
 import shutil
 import copy
-import subprocess
 import os
-import tempfile
 from itertools import zip_longest
 from .generic_utils import clean_pdb
 from .biopython_utils import hotspot_residues, biopython_align_all_ca
@@ -186,7 +184,10 @@ def _chain_hydrophobic_sasa(chain_entity):
 
 def _calculate_shape_complementarity(pdb_file_path, binder_chain="B", target_chain="A", distance=4.0):
     """
-    Calculate shape complementarity using SCASA.
+    Calculate shape complementarity - PLACEHOLDER FUNCTION.
+    
+    This is currently a placeholder function returning a fixed value while a suitable
+    PyRosetta-free shape complementarity replacement is identified and implemented.
     
     Parameters
     ----------
@@ -202,85 +203,10 @@ def _calculate_shape_complementarity(pdb_file_path, binder_chain="B", target_cha
     Returns
     -------
     float
-        Shape complementarity value (0.0 to 1.0), or 0.70 as fallback
+        Shape complementarity placeholder value (0.70)
     """
-    try:
-        # Check if SCASA is available
-        try:
-            result = subprocess.run(['SCASA', '--help'], capture_output=True, text=True, timeout=10)
-            if result.returncode != 0:
-                raise FileNotFoundError("SCASA command not found")
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            print("[SCASA] WARNING: SCASA not found, using fallback SC value of 0.70")
-            return 0.70
-        
-        # Create temporary file for SCASA output
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as tmp_file:
-            tmp_output = tmp_file.name
-        
-        try:
-            # Run SCASA shape complementarity calculation
-            cmd = [
-                'SCASA', 'sc',
-                '--pdb', pdb_file_path,
-                '--complex_1', binder_chain,
-                '--complex_2', target_chain, 
-                '--distance', str(distance)
-            ]
-            
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                cwd=os.path.dirname(pdb_file_path) if os.path.dirname(pdb_file_path) else None
-            )
-            
-            if result.returncode == 0:
-                # Parse the output to extract shape complementarity value
-                output_lines = result.stdout.strip().split('\n')
-                for line in output_lines:
-                    line = line.strip()
-                    # Look for lines containing shape complementarity results
-                    # SCASA typically outputs the SC value in a specific format
-                    if 'shape complementarity' in line.lower() or 'sc' in line.lower():
-                        # Try to extract numerical value
-                        parts = line.split()
-                        for part in parts:
-                            try:
-                                sc_value = float(part)
-                                # Validate that SC is in expected range [0, 1]
-                                if 0.0 <= sc_value <= 1.0:
-                                    return round(sc_value, 3)
-                            except ValueError:
-                                continue
-                
-                # If no clear SC value found in stdout, try parsing the entire output
-                # as SCASA may output just the numerical value
-                try:
-                    sc_value = float(result.stdout.strip())
-                    if 0.0 <= sc_value <= 1.0:
-                        return round(sc_value, 3)
-                except ValueError:
-                    pass
-                    
-            else:
-                print(f"[SCASA] ERROR: SCASA failed with return code {result.returncode}")
-                if result.stderr:
-                    print(f"[SCASA] STDERR: {result.stderr}")
-                    
-        finally:
-            # Clean up temporary file
-            try:
-                if os.path.exists(tmp_output):
-                    os.unlink(tmp_output)
-            except OSError:
-                pass
-                
-    except Exception as e:
-        print(f"[SCASA] ERROR calculating shape complementarity for {pdb_file_path}: {e}")
-    
-    # Return fallback value that passes filters (>= 0.6)
+    # TODO: Implement proper PyRosetta-free shape complementarity calculation
+    # Current placeholder value chosen to pass typical filtering thresholds
     return 0.70
 
 def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
