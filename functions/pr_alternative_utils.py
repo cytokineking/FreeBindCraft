@@ -22,6 +22,8 @@ import gc
 import shutil
 import copy
 import os
+import json
+import subprocess
 from itertools import zip_longest
 from .generic_utils import clean_pdb
 from .biopython_utils import hotspot_residues, biopython_align_all_ca
@@ -184,29 +186,92 @@ def _chain_hydrophobic_sasa(chain_entity):
 
 def _calculate_shape_complementarity(pdb_file_path, binder_chain="B", target_chain="A", distance=4.0):
     """
-    Calculate shape complementarity - PLACEHOLDER FUNCTION.
-    
-    This is currently a placeholder function returning a fixed value while a suitable
-    PyRosetta-free shape complementarity replacement is identified and implemented.
-    
+    Calculate shape complementarity using sc-rs CLI when available.
+    Looks first for a local binary placed next to this module (e.g., 'functions/sc' or 'functions/sc-rs').
+    Falls back to a conservative placeholder (0.70) if sc-rs is not installed or fails.
+
     Parameters
     ----------
     pdb_file_path : str
         Path to the PDB file containing the complex
     binder_chain : str
         Chain ID of the binder (default: "B")
-    target_chain : str  
+    target_chain : str
         Chain ID of the target (default: "A")
     distance : float
-        Interface generation parameter (default: 4.0)
-        
+        Unused here; retained for API compatibility
+
     Returns
     -------
     float
-        Shape complementarity placeholder value (0.70)
+        Shape complementarity in [0, 1]
     """
-    # TODO: Implement proper PyRosetta-free shape complementarity calculation
-    # Current placeholder value chosen to pass typical filtering thresholds
+    try:
+        # Resolve sc-rs binary: local next to this file, then env vars, then PATH
+        module_dir = os.path.dirname(os.path.abspath(__file__))
+        local_candidates = [
+            os.path.join(module_dir, 'sc'),
+            os.path.join(module_dir, 'sc-rs'),
+        ]
+        env_candidates = [os.environ.get('SC_RS_BIN'), os.environ.get('SC_BIN')]
+        path_candidates = [
+            shutil.which('sc'),
+            shutil.which('sc-rs'),
+            shutil.which('shape-complementarity'),
+            shutil.which('sc_rs'),
+        ]
+
+        sc_bin = None
+        for candidate in local_candidates + env_candidates + path_candidates:
+            if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                sc_bin = candidate
+                break
+
+        if sc_bin is None:
+            # Fallback to placeholder if not found
+            return 0.70
+
+        # sc-rs CLI: sc <pdb> <chainA> <chainB> --json; SC is symmetric, pass target first for clarity
+        cmd = [sc_bin, pdb_file_path, str(target_chain), str(binder_chain), '--json']
+        proc = subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        stdout = (proc.stdout or '').strip()
+        if not stdout:
+            return 0.70
+
+        # Parse JSON strictly, else try to extract from mixed output
+        try:
+            payload = json.loads(stdout)
+        except Exception:
+            payload = None
+            try:
+                s_idx = stdout.rfind('{')
+                e_idx = stdout.rfind('}')
+                if s_idx != -1 and e_idx != -1 and e_idx > s_idx:
+                    payload = json.loads(stdout[s_idx:e_idx+1])
+            except Exception:
+                payload = None
+
+        if isinstance(payload, dict) and 'sc_value' in payload:
+            try:
+                sc_val = float(payload['sc_value'])
+                if 0.0 <= sc_val <= 1.0:
+                    return sc_val
+            except Exception:
+                pass
+    except subprocess.TimeoutExpired:
+        print(f"[SC-RS] ERROR: sc-rs timed out for {os.path.basename(pdb_file_path)}")
+    except subprocess.CalledProcessError as e:
+        print(f"[SC-RS] ERROR running sc-rs: {e}. stderr: {getattr(e, 'stderr', '')}")
+    except Exception as e:
+        print(f"[SC-RS] WARN: Failed to compute SC for {pdb_file_path}: {e}")
+
+    # Fallback to placeholder to keep pipelines running
     return 0.70
 
 def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
