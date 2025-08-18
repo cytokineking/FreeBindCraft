@@ -29,6 +29,26 @@ from functions.biopython_utils import calculate_clash_score
 _PROCESS_PYROSETTA_READY = False
 
 
+def ensure_binaries_executable():
+    """Ensure all required binaries in functions/ are executable."""
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    functions_dir = os.path.join(repo_root, "functions")
+    
+    binaries = ["dssp", "DAlphaBall.gcc", "sc"]
+    for binary in binaries:
+        binary_path = os.path.join(functions_dir, binary)
+        if os.path.isfile(binary_path):
+            try:
+                # Check if already executable
+                if not os.access(binary_path, os.X_OK):
+                    # Make executable
+                    current_mode = os.stat(binary_path).st_mode
+                    os.chmod(binary_path, current_mode | 0o755)
+                    print(f"Made {binary} executable", flush=True)
+            except Exception as e:
+                print(f"Warning: Failed to make {binary} executable: {e}", flush=True)
+
+
 def try_init_pyrosetta(dalphaball_path: str, verbose: bool = True) -> bool:
     """Attempt to initialize PyRosetta with sane defaults. Returns True on success, False otherwise."""
     if not PYROSETTA_AVAILABLE or pr is None:
@@ -147,6 +167,9 @@ def main():
     parser.add_argument("--no-pyrosetta", action="store_true", help="Skip attempting to use PyRosetta even if installed")
     parser.add_argument("--workers", "-w", type=int, default=1, help="Number of worker processes for parallel scoring (default: 1)")
     args = parser.parse_args()
+
+    # Ensure all binaries are executable
+    ensure_binaries_executable()
 
     pdb_dir = args.pdb_dir
     if not pdb_dir:

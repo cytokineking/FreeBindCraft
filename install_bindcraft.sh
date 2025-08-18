@@ -139,6 +139,14 @@ rm "${params_file}" || { echo -e "Warning: Failed to remove AlphaFold2 weights a
 echo -e "Changing permissions for executables\n"
 chmod +x "${install_dir}/functions/dssp" || { echo -e "Error: Failed to chmod dssp"; exit 1; }
 
+# chmod sc binary for shape complementarity (always needed for PyRosetta-free mode)
+if [ -f "${install_dir}/functions/sc" ]; then
+    chmod +x "${install_dir}/functions/sc" || { echo -e "Error: Failed to chmod sc"; exit 1; }
+    echo -e "Made sc binary executable for shape complementarity calculations"
+else
+    echo -e "Warning: sc binary not found at ${install_dir}/functions/sc - shape complementarity will use placeholder values"
+fi
+
 # Only setup DAlphaBall.gcc if installing PyRosetta
 if [ "$install_pyrosetta" = true ]; then
     chmod +x "${install_dir}/functions/DAlphaBall.gcc" || { echo -e "Error: Failed to chmod DAlphaBall.gcc"; exit 1; }

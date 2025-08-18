@@ -10,6 +10,34 @@ from functions.biopython_utils import clear_dssp_cache # Explicit import for DSS
 # Check if JAX-capable GPU is available, otherwise exit
 check_jax_gpu()
 
+def ensure_binaries_executable(use_pyrosetta=True):
+    """Ensure all required binaries in functions/ are executable."""
+    bindcraft_folder = os.path.dirname(os.path.realpath(__file__))
+    functions_dir = os.path.join(bindcraft_folder, "functions")
+    
+    # Always needed binaries
+    binaries = ["dssp", "sc"]
+    
+    # Only add DAlphaBall.gcc if using PyRosetta
+    if use_pyrosetta:
+        binaries.append("DAlphaBall.gcc")
+    
+    for binary in binaries:
+        binary_path = os.path.join(functions_dir, binary)
+        if os.path.isfile(binary_path):
+            try:
+                # Check if already executable
+                if not os.access(binary_path, os.X_OK):
+                    # Make executable
+                    current_mode = os.stat(binary_path).st_mode
+                    os.chmod(binary_path, current_mode | 0o755)
+                    print(f"Made {binary} executable")
+            except Exception as e:
+                print(f"Warning: Failed to make {binary} executable: {e}")
+
+# Ensure binaries are executable at startup (will be called again with proper use_pyrosetta flag later)
+ensure_binaries_executable()
+
 ######################################
 ### parse input paths
 parser = argparse.ArgumentParser(description='Script to run BindCraft binder design.')
@@ -98,6 +126,9 @@ else:
             print("Falling back to OpenMM and Biopython routines.")
     else:
         print("PyRosetta not found. Using OpenMM and Biopython routines.")
+
+# Ensure binaries are executable with correct PyRosetta mode
+ensure_binaries_executable(use_pyrosetta=use_pyrosetta)
 
 print(f"Running binder design for target {settings_file}")
 print(f"Design settings used: {advanced_file}")
