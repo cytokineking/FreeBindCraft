@@ -8,7 +8,7 @@ replication is not possible.
 
 Functions:
     openmm_relax: Structure relaxation using OpenMM
-    biopython_score_interface: Interface scoring using Biopython
+    pr_alternative_score_interface: Interface scoring using Biopython
     
 Helper Functions:
     _get_openmm_forcefield: Singleton ForceField instance
