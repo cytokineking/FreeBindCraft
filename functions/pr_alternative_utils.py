@@ -465,52 +465,18 @@ def _compute_sasa_metrics_with_freesasa(pdb_file_path, binder_chain="B", target_
                 result_binder_only = freesasa.calc(structure_binder_only)  # type: ignore[name-defined]
                 binder_sasa_monomer = float(result_binder_only.totalArea())
 
-                # Prefer FreeSASA classes: hydrophobicity as Apolar/Total area
-                used_classes = False
+                # FreeSASA residue selection only: hydrophobic residues / total (no fallback)
                 try:
-                    classes = None
-                    if hasattr(freesasa, 'classifyResults'):
-                        classes = freesasa.classifyResults(result_binder_only, structure_binder_only)  # type: ignore[attr-defined]
-                    elif hasattr(freesasa, 'resultClasses'):
-                        # Some builds may expose resultClasses(structure, result)
-                        classes = freesasa.resultClasses(structure_binder_only, result_binder_only)  # type: ignore[attr-defined]
-
-                    if classes is not None:
-                        # Most Python builds return a dict with 'Apolar' and 'Polar' only.
-                        # Always use result.totalArea() for total area.
-                        total_area_val = float(result_binder_only.totalArea())
-                        apolar_area_val = None
-                        if isinstance(classes, dict):
-                            apolar_area_val = classes.get('Apolar', classes.get('apolar'))
-                        else:
-                            apolar_area_val = getattr(classes, 'apolar', getattr(classes, 'Apolar', None))
-
-                        if apolar_area_val is not None and total_area_val > 0.0:
-                            surface_hydrophobicity_fraction = float(apolar_area_val) / total_area_val
-                            used_classes = True
+                    sel_defs = [
+                        "hydro, resn ala+val+leu+ile+met+phe+pro+trp+tyr+cys"
+                    ]
+                    sel_area = freesasa.selectArea(sel_defs, structure_binder_only, result_binder_only)  # type: ignore[name-defined]
+                    hydro_area = float(sel_area.get('hydro', 0.0))
+                    if binder_sasa_monomer > 0.0:
+                        surface_hydrophobicity_fraction = hydro_area / binder_sasa_monomer
                 except Exception:
-                    used_classes = False
-
-                if not used_classes:
-                    # Fallback: Biopython residue-level hydrophobic SASA fraction
-                    try:
-                        sr_mono_bio = ShrakeRupley(probe_radius=1.40, n_points=960, radii_dict=R_CHOTHIA)
-                        sr_mono_bio.compute(binder_only_model, level='A')
-                        binder_total_bio = _chain_total_sasa(binder_only_chain)
-                        hydrophobic_res_sasa = 0.0
-                        for residue in binder_only_chain:
-                            if Polypeptide.is_aa(residue, standard=True):
-                                try:
-                                    aa1 = seq1(residue.get_resname()).upper()
-                                except Exception:
-                                    aa1 = ''
-                                if aa1 in HYDROPHOBIC_AA_SET:
-                                    res_sasa = sum(getattr(atom, 'sasa', 0.0) for atom in residue.get_atoms())
-                                    hydrophobic_res_sasa += res_sasa
-                        if binder_total_bio > 0.0:
-                            surface_hydrophobicity_fraction = hydrophobic_res_sasa / binder_total_bio
-                    except Exception:
-                        pass
+                    # Keep default 0.0 if selection fails
+                    pass
 
             if target_chain in complex_model_bp:
                 target_only_structure = Structure.Structure('target_only')
