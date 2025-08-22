@@ -25,6 +25,8 @@ import os
 import json
 import tempfile
 import subprocess
+import contextlib
+import sys
 from itertools import zip_longest
 from .generic_utils import clean_pdb
 from .biopython_utils import hotspot_residues, biopython_align_all_ca
@@ -162,6 +164,17 @@ _POLAR_CARBONS = {
     "THR": {"CB"},
     "TYR": {"CZ"},
 }
+
+@contextlib.contextmanager
+def _suppress_freesasa_warnings():
+    """Temporarily redirect stderr to suppress FreeSASA warnings."""
+    original_stderr = sys.stderr
+    try:
+        with open(os.devnull, 'w') as devnull:
+            sys.stderr = devnull
+            yield
+    finally:
+        sys.stderr = original_stderr
 
 # Hydrophobic amino acids set (match PyRosetta hydrophobic/aromatic intent)
 HYDROPHOBIC_AA_SET = set("ACFILMPVWY")
@@ -470,7 +483,8 @@ def _compute_sasa_metrics_with_freesasa(pdb_file_path, binder_chain="B", target_
                     sel_defs = [
                         "hydro, resn ala+val+leu+ile+met+phe+pro+trp+tyr+cys"
                     ]
-                    sel_area = freesasa.selectArea(sel_defs, structure_binder_only, result_binder_only)  # type: ignore[name-defined]
+                    with _suppress_freesasa_warnings():
+                        sel_area = freesasa.selectArea(sel_defs, structure_binder_only, result_binder_only)  # type: ignore[name-defined]
                     hydro_area = float(sel_area.get('hydro', 0.0))
                     if binder_sasa_monomer > 0.0:
                         surface_hydrophobicity_fraction = hydro_area / binder_sasa_monomer
