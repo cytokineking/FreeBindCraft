@@ -15,7 +15,6 @@ Helper Functions:
     _create_lj_repulsive_force: Custom LJ repulsion for clash resolution
     _create_backbone_restraint_force: Backbone position restraints
     _chain_total_sasa: Calculate total SASA for a chain
-    _chain_hydrophobic_sasa: Calculate hydrophobic SASA
 """
 
 import gc
@@ -26,7 +25,6 @@ import json
 import tempfile
 import subprocess
 import contextlib
-import sys
 from itertools import zip_longest
 from .generic_utils import clean_pdb
 from .biopython_utils import hotspot_residues, biopython_align_all_ca
@@ -146,24 +144,9 @@ def _create_backbone_restraint_force(system, fixer, restraint_k_kcal_mol_A2):
 # Chothia/NACCESS-like atomic radii (heavy atoms dominate SASA)
 R_CHOTHIA = {"H": 1.20, "C": 1.70, "N": 1.55, "O": 1.52, "S": 1.80}
 
-# Max ASA (Tien et al. 2013, approximate; for RSA calculation)
-_MAX_ASA = {
-    'A': 121.0, 'R': 265.0, 'N': 187.0, 'D': 187.0, 'C': 148.0,
-    'Q': 214.0, 'E': 214.0, 'G': 97.0,  'H': 216.0, 'I': 195.0,
-    'L': 191.0, 'K': 230.0, 'M': 203.0, 'F': 228.0, 'P': 154.0,
-    'S': 143.0, 'T': 163.0, 'W': 264.0, 'Y': 255.0, 'V': 165.0,
-}
+# (Unused) _MAX_ASA removed during cleanup.
 
-# Residue-specific polar carbons to exclude from hydrophobic SASA
-_POLAR_CARBONS = {
-    "ASP": {"CG"},
-    "GLU": {"CD"},
-    "ASN": {"CG"},
-    "GLN": {"CD"},
-    "SER": {"CB"},
-    "THR": {"CB"},
-    "TYR": {"CZ"},
-}
+# (Unused) Residue-specific polar carbons mapping removed during cleanup.
 
 @contextlib.contextmanager
 def _suppress_freesasa_warnings():
@@ -185,42 +168,8 @@ def _suppress_freesasa_warnings():
 # Hydrophobic amino acids set (match PyRosetta hydrophobic/aromatic intent)
 HYDROPHOBIC_AA_SET = set("ACFILMPVWY")
 
-def _is_hydrophobic_atom(residue, atom):
-    resn = residue.get_resname()
-    name = atom.get_id()
-    elem = (atom.element or "").upper()
-    # Heuristic: many PDBs lack Atom.element. Infer from atom name prefix.
-    if not elem:
-        n0 = (name or "").strip().upper()
-        if n0.startswith("C"):
-            elem = "C"
-        elif n0.startswith("S"):
-            elem = "S"
-    # Only side-chain carbon/sulfur; exclude backbone carbonyl C and CA
-    if elem not in ("C", "S"):
-        return False
-    if name in ("C", "CA"):
-        return False
-    # Exclude residue-specific polar carbons
-    if name in _POLAR_CARBONS.get(resn, set()):
-        return False
-    # Ignore altlocs other than blank/A for determinism
-    alt = atom.get_altloc()
-    if alt not in (" ", "", "A"):
-        return False
-    return True
-
 def _chain_total_sasa(chain_entity):
     return sum(getattr(atom, "sasa", 0.0) for atom in chain_entity.get_atoms())
-
-def _chain_hydrophobic_sasa(chain_entity):
-    hydrophobic_sasa_sum = 0.0
-    for residue in chain_entity:
-        if Polypeptide.is_aa(residue, standard=True):
-            for atom in residue.get_atoms():
-                if _is_hydrophobic_atom(residue, atom):
-                    hydrophobic_sasa_sum += getattr(atom, "sasa", 0.0)
-    return hydrophobic_sasa_sum
 
 def _calculate_shape_complementarity(pdb_file_path, binder_chain="B", target_chain="A", distance=4.0):
     """

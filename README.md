@@ -2,28 +2,29 @@
 
 This repository contains a modified version of Martin Pacesa's BindCraft (v1.52). The primary change is the introduction of an **optional PyRosetta bypass mechanism**.
 
-For comprehensive details on the original BindCraft pipeline, features, advanced settings, and filter explanations, please refer to the **original BindCraft repository: [https://github.com/martinpacesa/BindCraft](https://github.com/martinpacesa/BindCraft)** and the [original preprint](https://www.biorxiv.org/content/10.1101/2024.09.30.615802).
+For comprehensive details on the original BindCraft pipeline, features, advanced settings, and filter explanations, please refer to the **original BindCraft repository: [https://github.com/martinpacesa/BindCraft](https://github.com/martinpacesa/BindCraft)** and the [original preprint](https://www.biorxiv.org/content/10.1101/2024.09.30.615802). This fork is hosted at: [https://github.com/cytokineking/BindCraft-PyRosetta-Optional](https://github.com/cytokineking/BindCraft-PyRosetta-Optional).
 
 ## Key Modification: PyRosetta Bypass Functionality
 
-The `--no-pyrosetta` flag, usable during both installation and runtime, alters BindCraft's behavior:
+The `--no-pyrosetta` flag, usable during both installation and runtime, enables the following behavior:
 
-*   **OpenMM Relaxation:** When PyRosetta is bypassed, structural relaxation is performed using an OpenMM-based protocol instead of PyRosetta's FastRelax. This process includes structure preparation with PDBFixer, ramped backbone restraints to prevent excessive backbone movement, implicit solvation (OBC2), a custom repulsive force to mitigate clashes, and MD shakes.
-*   **Interface Scoring Bypass:** PyRosetta-dependent interface scoring (e.g., dG, ShapeComplementarity) is skipped. Placeholder values are returned for these metrics, configured to pass default filter thresholds.
-*   **Biopython Alternatives:** Critical functions normally reliant on PyRosetta (e.g., for RMSD calculations, PDB alignment) are substituted with Biopython-based implementations.
+*   **OpenMM Relaxation:** Structural relaxation uses an OpenMM-based protocol instead of PyRosetta's FastRelax. This includes structure preparation with PDBFixer, ramped backbone restraints, OBC2 implicit solvation, an additional short-range repulsive term to mitigate clashes, and short MD "shakes" for early stages.
+*   **Shape Complementarity (SC):** Replaced with an open-source implementation via `sc-rs` when available. See `sc-rs` project: [https://github.com/cytokineking/sc-rs](https://github.com/cytokineking/sc-rs).
+*   **SASA Calculations:** Surface area and derived metrics are computed using [FreeSASA](https://github.com/mittinatten/freesasa) (if installed) or a Biopython Shrake–Rupley fallback.
+*   **Interface Residues and Alignment:** Uses Biopython-based routines for interface residue identification, RMSD, and PDB alignment.
 
 This bypass is intended for situations where:
 *   PyRosetta licensing or installation poses a challenge.
 *   Speed is prioritized over detailed Rosetta-based structural metrics.
 *   A reduced dependency footprint is desired.
 
-**Important Note:** When using the PyRosetta bypass, structural analysis and filtering based on Rosetta-specific metrics are not performed. Evaluate design quality accordingly.
+**Important Note:** Rosetta-specific metrics that lack open-source equivalents (e.g., certain energy decompositions) are not computed; placeholder values are used where needed for compatibility with default filters. Evaluate design quality accordingly.
 
 ## Installation
 
 1.  Clone this modified repository:
     ```bash
-    git clone https://github.com/cytokineking/PyRosetta-Optional-BindCraft-v1.5 [install_folder]
+    git clone https://github.com/cytokineking/BindCraft-PyRosetta-Optional [install_folder]
     ```
 2.  Navigate into your install folder (`cd [install_folder]`) and run the installation script. A CUDA-compatible Nvidia graphics card is required.
 
@@ -68,3 +69,23 @@ python -u ./bindcraft.py --settings './settings_target/your_target.json' --filte
 **Note:** Even if you installed BindCraft *with* PyRosetta, you can still run in bypass mode by adding the `--no-pyrosetta` flag at runtime.
 
 For details on configuring target settings (`--settings`), filters (`--filters`), advanced parameters (`--advanced`), and other operational aspects of BindCraft, please consult the documentation in the [original BindCraft repository](https://github.com/martinpacesa/BindCraft).
+
+## Citations & External Tools
+
+- Shape Complementarity (SC): `sc-rs` — [https://github.com/cytokineking/sc-rs](https://github.com/cytokineking/sc-rs)
+- FreeSASA (SASA): [https://github.com/mittinatten/freesasa](https://github.com/mittinatten/freesasa)
+- Biopython: [https://biopython.org](https://biopython.org)
+
+## Extras: Analysis and Utility Scripts
+
+This repository includes additional scripts and documents in `extras/` to assist with analysis and testing:
+
+- `extras/analyze_bindcraft_rejections.py`: Analyze MPNN rejections across runs and quantify which filters are most responsible; can estimate hypothetical rankings when Rosetta-only filters trigger.
+- `extras/bindcraft_rejection_analysis_spec.md`: Specification describing the rejection analysis outputs and methodology.
+- `extras/BUGFIX_FILE_DESCRIPTORS.md`: Notes on file descriptor fixes in high-throughput runs.
+- `extras/check_ulimit.sh`: Helper script to check system ulimit and suggest adjustments for many-parallel-file workloads.
+- `extras/compare_interface_metrics_all.py`: Compute interface metrics via PyRosetta (if available), FreeSASA, and Biopython across a folder of PDBs; outputs a combined CSV.
+- `extras/compare_pyrosetta_bypass_scores.py`: Side-by-side comparison of PyRosetta vs Biopython-only metrics for a folder of PDBs.
+- `extras/test_openmm_relax.py`: Quick test harness for OpenMM and PyRosetta relax routines.
+
+See `extras/README.md` for detailed usage examples and options.

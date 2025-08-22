@@ -22,6 +22,10 @@ import argparse
 import json
 import pandas as pd
 
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
 from functions.pyrosetta_utils import score_interface, PYROSETTA_AVAILABLE, pr
 from functions.biopython_utils import calculate_clash_score
 
@@ -31,8 +35,7 @@ _PROCESS_PYROSETTA_READY = False
 
 def ensure_binaries_executable():
     """Ensure all required binaries in functions/ are executable."""
-    repo_root = os.path.dirname(os.path.abspath(__file__))
-    functions_dir = os.path.join(repo_root, "functions")
+    functions_dir = os.path.join(REPO_ROOT, "functions")
     
     binaries = ["dssp", "DAlphaBall.gcc", "sc"]
     for binary in binaries:
@@ -188,8 +191,7 @@ def main():
     # Attempt to initialize PyRosetta unless explicitly disabled
     enable_pyrosetta = False
     if not args.no_pyrosetta:
-        repo_root = os.path.dirname(os.path.abspath(__file__))
-        dalphaball_path = os.path.join(repo_root, "functions", "DAlphaBall.gcc")
+        dalphaball_path = os.path.join(REPO_ROOT, "functions", "DAlphaBall.gcc")
         enable_pyrosetta = try_init_pyrosetta(dalphaball_path, verbose=True)
         if not enable_pyrosetta:
             print("Warning: PyRosetta unavailable or failed to initialize; proceeding with Biopython-only metrics.", flush=True)
