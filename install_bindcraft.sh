@@ -70,8 +70,7 @@ echo -e "BindCraft environment activated at ${CONDA_BASE}/envs/BindCraft"
 echo -e "Installing conda requirements\n"
 
 # Base packages (needed regardless of PyRosetta)
-# Include FreeSASA CLI/library (freesasa-c) and Python module (freesasa)
-BASE_PACKAGES="pip pandas matplotlib numpy<2.0.0 biopython scipy pdbfixer openmm seaborn libgfortran5 tqdm jupyter ffmpeg fsspec py3dmol chex dm-haiku flax<0.10.0 dm-tree joblib ml-collections immutabledict optax freesasa-c freesasa"
+BASE_PACKAGES="pip pandas matplotlib numpy<2.0.0 biopython scipy pdbfixer openmm seaborn libgfortran5 tqdm jupyter ffmpeg fsspec py3dmol chex dm-haiku flax<0.10.0 dm-tree joblib ml-collections immutabledict optax"
 
 # Pin JAX to stable version 0.6.0
 echo -e "Using JAX/jaxlib version 0.6.0 for stability\n"
@@ -95,9 +94,9 @@ fi
 
 # Define required packages based on installation mode
 if [ "$install_pyrosetta" = true ]; then
-    required_packages=(pip pandas libgfortran5 matplotlib numpy biopython scipy pdbfixer openmm seaborn tqdm jupyter ffmpeg pyrosetta fsspec py3dmol chex dm-haiku dm-tree joblib ml-collections immutabledict optax freesasa-c freesasa jaxlib jax cuda-nvcc cudnn)
+    required_packages=(pip pandas libgfortran5 matplotlib numpy biopython scipy pdbfixer openmm seaborn tqdm jupyter ffmpeg pyrosetta fsspec py3dmol chex dm-haiku dm-tree joblib ml-collections immutabledict optax jaxlib jax cuda-nvcc cudnn)
 else
-    required_packages=(pip pandas libgfortran5 matplotlib numpy biopython scipy pdbfixer openmm seaborn tqdm jupyter ffmpeg fsspec py3dmol chex dm-haiku dm-tree joblib ml-collections immutabledict optax freesasa-c freesasa jaxlib jax cuda-nvcc cudnn)
+    required_packages=(pip pandas libgfortran5 matplotlib numpy biopython scipy pdbfixer openmm seaborn tqdm jupyter ffmpeg fsspec py3dmol chex dm-haiku dm-tree joblib ml-collections immutabledict optax jaxlib jax cuda-nvcc cudnn)
 fi
 missing_packages=()
 
@@ -119,6 +118,11 @@ fi
 echo -e "Installing ColabDesign\n"
 pip3 install git+https://github.com/sokrypton/ColabDesign.git --no-deps || { echo -e "Error: Failed to install ColabDesign"; exit 1; }
 python -c "import colabdesign" >/dev/null 2>&1 || { echo -e "Error: colabdesign module not found after installation"; exit 1; }
+
+# install FreeSASA Python module
+echo -e "Installing FreeSASA Python module\n"
+pip3 install freesasa || { echo -e "Warning: Failed to install FreeSASA Python module via pip - FreeSASA SASA calculations will fall back to Biopython"; }
+python -c "import freesasa" >/dev/null 2>&1 && echo -e "FreeSASA Python module installed successfully" || echo -e "Warning: FreeSASA Python module not available - using Biopython fallback for SASA"
 
 # AlphaFold2 weights
 echo -e "Downloading AlphaFold2 model weights \n"
