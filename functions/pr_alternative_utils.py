@@ -266,11 +266,13 @@ def _calculate_shape_complementarity(pdb_file_path, binder_chain="B", target_cha
             except Exception:
                 payload = None
 
-        if isinstance(payload, dict) and 'sc_value' in payload:
+        if isinstance(payload, dict):
             try:
-                sc_val = float(payload['sc_value'])
-                if 0.0 <= sc_val <= 1.0:
-                    return sc_val
+                sc_key = 'sc' if 'sc' in payload else ('sc_value' if 'sc_value' in payload else None)
+                if sc_key is not None:
+                    sc_val = float(payload[sc_key])
+                    if 0.0 <= sc_val <= 1.0:
+                        return sc_val
             except Exception:
                 pass
     except subprocess.TimeoutExpired:
@@ -316,7 +318,7 @@ def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
             target_chain_in_complex = complex_model[target_chain]
             target_sasa_in_complex = _chain_total_sasa(target_chain_in_complex)
 
-        # Binder monomer SASA and surface hydrophobicity fraction
+        # Binder monomer SASA and surface hydrophobicity fraction (area-based)
         if binder_chain in complex_model:
             binder_only_structure = Structure.Structure('binder_only')
             binder_only_model = Model.Model(0)
@@ -328,32 +330,9 @@ def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
             sr_mono.compute(binder_only_model, level='A')
             binder_sasa_monomer = _chain_total_sasa(binder_only_chain)
 
-            # Compute surface hydrophobicity using residue-level RSA thresholding
-            hydrophobic_residue_set = set('ACFILMPVWY')
-            num_surface_residues = 0
-            num_hydrophobic_surface_residues = 0
-            for residue in binder_only_chain:
-                if not Polypeptide.is_aa(residue, standard=True):
-                    continue
-                residue_sasa = 0.0
-                for atom in residue.get_atoms():
-                    residue_sasa += getattr(atom, 'sasa', 0.0)
-                try:
-                    aa_one_letter = seq1(residue.get_resname())
-                except Exception:
-                    continue
-                max_asa = _MAX_ASA.get(aa_one_letter)
-                if not max_asa or max_asa <= 0:
-                    continue
-                rsa = residue_sasa / max_asa
-                if rsa >= 0.25:
-                    num_surface_residues += 1
-                    if aa_one_letter in hydrophobic_residue_set:
-                        num_hydrophobic_surface_residues += 1
-            if num_surface_residues > 0:
-                surface_hydrophobicity_fraction = num_hydrophobic_surface_residues / num_surface_residues
-            else:
-                surface_hydrophobicity_fraction = 0.0
+            # Area-weighted hydrophobic surface fraction using atom-level SASA
+            hydrophobic_sasa = _chain_hydrophobic_sasa(binder_only_chain)
+            surface_hydrophobicity_fraction = (hydrophobic_sasa / binder_sasa_monomer) if binder_sasa_monomer > 0.0 else 0.0
         else:
             surface_hydrophobicity_fraction = 0.0
 
@@ -501,35 +480,16 @@ def _compute_sasa_metrics_with_freesasa(pdb_file_path, binder_chain="B", target_
                     used_classes = False
 
                 if not used_classes:
-                    # Fallback: surface hydrophobicity via residue-level RSA using FreeSASA atom areas
-                    hydrophobic_residue_set = set('ACFILMPVWY')
-                    residue_area_map = {}
-                    num_atoms = structure_binder_only.nAtoms()
-                    for atom_index in range(num_atoms):
-                        resname = structure_binder_only.residueName(atom_index)
-                        chain_label = structure_binder_only.chainLabel(atom_index)
-                        residue_number = structure_binder_only.residueNumber(atom_index)
-                        residue_key = (chain_label, residue_number, resname)
-                        atom_area = float(result_binder_only.atomArea(atom_index))
-                        residue_area_map[residue_key] = residue_area_map.get(residue_key, 0.0) + atom_area
-
-                    num_surface_residues = 0
-                    num_hydrophobic_surface_residues = 0
-                    for (_chain_label, _residue_number, resname), residue_area in residue_area_map.items():
-                        try:
-                            aa_one_letter = seq1(resname)
-                        except Exception:
-                            continue
-                        max_asa = _MAX_ASA.get(aa_one_letter)
-                        if not max_asa or max_asa <= 0:
-                            continue
-                        rsa = residue_area / max_asa
-                        if rsa >= 0.25:
-                            num_surface_residues += 1
-                            if aa_one_letter in hydrophobic_residue_set:
-                                num_hydrophobic_surface_residues += 1
-                    if num_surface_residues > 0:
-                        surface_hydrophobicity_fraction = num_hydrophobic_surface_residues / num_surface_residues
+                    # Fallback: area-based using Biopython atom SASA on binder_only_model
+                    try:
+                        sr_mono_bio = ShrakeRupley(probe_radius=1.40, n_points=960, radii_dict=R_CHOTHIA)
+                        sr_mono_bio.compute(binder_only_model, level='A')
+                        binder_total_bio = _chain_total_sasa(binder_only_chain)
+                        hydrophobic_sasa_bio = _chain_hydrophobic_sasa(binder_only_chain)
+                        if binder_total_bio > 0.0:
+                            surface_hydrophobicity_fraction = hydrophobic_sasa_bio / binder_total_bio
+                    except Exception:
+                        pass
 
             if target_chain in complex_model_bp:
                 target_only_structure = Structure.Structure('target_only')
