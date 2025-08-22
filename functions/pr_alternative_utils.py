@@ -163,10 +163,20 @@ _POLAR_CARBONS = {
     "TYR": {"CZ"},
 }
 
+# Hydrophobic amino acids set (match PyRosetta hydrophobic/aromatic intent)
+HYDROPHOBIC_AA_SET = set("ACFILMPVWY")
+
 def _is_hydrophobic_atom(residue, atom):
     resn = residue.get_resname()
     name = atom.get_id()
     elem = (atom.element or "").upper()
+    # Heuristic: many PDBs lack Atom.element. Infer from atom name prefix.
+    if not elem:
+        n0 = (name or "").strip().upper()
+        if n0.startswith("C"):
+            elem = "C"
+        elif n0.startswith("S"):
+            elem = "S"
     # Only side-chain carbon/sulfur; exclude backbone carbonyl C and CA
     if elem not in ("C", "S"):
         return False
@@ -330,9 +340,18 @@ def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
             sr_mono.compute(binder_only_model, level='A')
             binder_sasa_monomer = _chain_total_sasa(binder_only_chain)
 
-            # Area-weighted hydrophobic surface fraction using atom-level SASA
-            hydrophobic_sasa = _chain_hydrophobic_sasa(binder_only_chain)
-            surface_hydrophobicity_fraction = (hydrophobic_sasa / binder_sasa_monomer) if binder_sasa_monomer > 0.0 else 0.0
+            # Residue-based hydrophobic surface fraction (sum residue SASA for hydrophobic residues)
+            hydrophobic_res_sasa = 0.0
+            for residue in binder_only_chain:
+                if Polypeptide.is_aa(residue, standard=True):
+                    try:
+                        aa1 = seq1(residue.get_resname()).upper()
+                    except Exception:
+                        aa1 = ''
+                    if aa1 in HYDROPHOBIC_AA_SET:
+                        res_sasa = sum(getattr(atom, 'sasa', 0.0) for atom in residue.get_atoms())
+                        hydrophobic_res_sasa += res_sasa
+            surface_hydrophobicity_fraction = (hydrophobic_res_sasa / binder_sasa_monomer) if binder_sasa_monomer > 0.0 else 0.0
         else:
             surface_hydrophobicity_fraction = 0.0
 
@@ -457,37 +476,39 @@ def _compute_sasa_metrics_with_freesasa(pdb_file_path, binder_chain="B", target_
                         classes = freesasa.resultClasses(structure_binder_only, result_binder_only)  # type: ignore[attr-defined]
 
                     if classes is not None:
-                        def _get_key(obj, keys):
-                            if isinstance(obj, dict):
-                                for k in keys:
-                                    if k in obj:
-                                        return obj[k]
-                                return None
-                            # Fallback attribute access
-                            for k in keys:
-                                val = getattr(obj, k, None)
-                                if val is not None:
-                                    return val
-                            return None
+                        # Most Python builds return a dict with 'Apolar' and 'Polar' only.
+                        # Always use result.totalArea() for total area.
+                        total_area_val = float(result_binder_only.totalArea())
+                        apolar_area_val = None
+                        if isinstance(classes, dict):
+                            apolar_area_val = classes.get('Apolar', classes.get('apolar'))
+                        else:
+                            apolar_area_val = getattr(classes, 'apolar', getattr(classes, 'Apolar', None))
 
-                        total_area_val = _get_key(classes, ('Total', 'total', 'TOTAL', 'total_area'))
-                        apolar_area_val = _get_key(classes, ('Apolar', 'apolar', 'APOLAR', 'Non-polar', 'non-polar', 'nonpolar', 'apolar_area'))
-
-                        if total_area_val is not None and apolar_area_val is not None and float(total_area_val) > 0.0:
-                            surface_hydrophobicity_fraction = float(apolar_area_val) / float(total_area_val)
+                        if apolar_area_val is not None and total_area_val > 0.0:
+                            surface_hydrophobicity_fraction = float(apolar_area_val) / total_area_val
                             used_classes = True
                 except Exception:
                     used_classes = False
 
                 if not used_classes:
-                    # Fallback: area-based using Biopython atom SASA on binder_only_model
+                    # Fallback: Biopython residue-level hydrophobic SASA fraction
                     try:
                         sr_mono_bio = ShrakeRupley(probe_radius=1.40, n_points=960, radii_dict=R_CHOTHIA)
                         sr_mono_bio.compute(binder_only_model, level='A')
                         binder_total_bio = _chain_total_sasa(binder_only_chain)
-                        hydrophobic_sasa_bio = _chain_hydrophobic_sasa(binder_only_chain)
+                        hydrophobic_res_sasa = 0.0
+                        for residue in binder_only_chain:
+                            if Polypeptide.is_aa(residue, standard=True):
+                                try:
+                                    aa1 = seq1(residue.get_resname()).upper()
+                                except Exception:
+                                    aa1 = ''
+                                if aa1 in HYDROPHOBIC_AA_SET:
+                                    res_sasa = sum(getattr(atom, 'sasa', 0.0) for atom in residue.get_atoms())
+                                    hydrophobic_res_sasa += res_sasa
                         if binder_total_bio > 0.0:
-                            surface_hydrophobicity_fraction = hydrophobic_sasa_bio / binder_total_bio
+                            surface_hydrophobicity_fraction = hydrophobic_res_sasa / binder_total_bio
                     except Exception:
                         pass
 
@@ -949,7 +970,8 @@ def pr_alternative_score_interface(pdb_file, binder_chain="B", sasa_engine="auto
     except Exception as e_idsasa:
         print(f"[Biopython-SASA] WARN interface_target_dSASA for {pdb_file}: {e_idsasa}")
     interface_total_dSASA = interface_binder_dSASA + interface_target_dSASA
-    interface_binder_fraction = (interface_binder_dSASA / binder_sasa_monomer * 100.0) if binder_sasa_monomer > 0.0 else 0.0
+    # Align with PyRosetta: use TOTAL interface dSASA divided by binder SASA IN COMPLEX
+    interface_binder_fraction = (interface_total_dSASA / binder_sasa_in_complex * 100.0) if binder_sasa_in_complex > 0.0 else 0.0
 
     # Calculate shape complementarity using SCASA
     interface_sc = _calculate_shape_complementarity(pdb_file, binder_chain, target_chain='A')
