@@ -70,7 +70,8 @@ echo -e "BindCraft environment activated at ${CONDA_BASE}/envs/BindCraft"
 echo -e "Installing conda requirements\n"
 
 # Base packages (needed regardless of PyRosetta)
-BASE_PACKAGES="pip pandas matplotlib numpy<2.0.0 biopython scipy pdbfixer openmm seaborn libgfortran5 tqdm jupyter ffmpeg fsspec py3dmol chex dm-haiku flax<0.10.0 dm-tree joblib ml-collections immutabledict optax"
+# Include FreeSASA CLI/library (freesasa-c) and Python module (freesasa)
+BASE_PACKAGES="pip pandas matplotlib numpy<2.0.0 biopython scipy pdbfixer openmm seaborn libgfortran5 tqdm jupyter ffmpeg fsspec py3dmol chex dm-haiku flax<0.10.0 dm-tree joblib ml-collections immutabledict optax freesasa-c freesasa"
 
 # Pin JAX to stable version 0.6.0
 echo -e "Using JAX/jaxlib version 0.6.0 for stability\n"
@@ -94,9 +95,9 @@ fi
 
 # Define required packages based on installation mode
 if [ "$install_pyrosetta" = true ]; then
-    required_packages=(pip pandas libgfortran5 matplotlib numpy biopython scipy pdbfixer openmm seaborn tqdm jupyter ffmpeg pyrosetta fsspec py3dmol chex dm-haiku dm-tree joblib ml-collections immutabledict optax jaxlib jax cuda-nvcc cudnn)
+    required_packages=(pip pandas libgfortran5 matplotlib numpy biopython scipy pdbfixer openmm seaborn tqdm jupyter ffmpeg pyrosetta fsspec py3dmol chex dm-haiku dm-tree joblib ml-collections immutabledict optax freesasa-c freesasa jaxlib jax cuda-nvcc cudnn)
 else
-    required_packages=(pip pandas libgfortran5 matplotlib numpy biopython scipy pdbfixer openmm seaborn tqdm jupyter ffmpeg fsspec py3dmol chex dm-haiku dm-tree joblib ml-collections immutabledict optax jaxlib jax cuda-nvcc cudnn)
+    required_packages=(pip pandas libgfortran5 matplotlib numpy biopython scipy pdbfixer openmm seaborn tqdm jupyter ffmpeg fsspec py3dmol chex dm-haiku dm-tree joblib ml-collections immutabledict optax freesasa-c freesasa jaxlib jax cuda-nvcc cudnn)
 fi
 missing_packages=()
 

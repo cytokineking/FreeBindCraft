@@ -23,6 +23,7 @@ import shutil
 import copy
 import os
 import json
+import tempfile
 import subprocess
 from itertools import zip_longest
 from .generic_utils import clean_pdb
@@ -40,6 +41,14 @@ from Bio.PDB.SASA import ShrakeRupley
 
 # Cache a single OpenMM ForceField instance to avoid repeated XML parsing per relaxation
 _OPENMM_FORCEFIELD_SINGLETON = None
+
+# Optional FreeSASA availability
+try:
+    import freesasa  # type: ignore
+    _HAS_FREESASA = True
+except Exception:
+    freesasa = None  # type: ignore
+    _HAS_FREESASA = False
 
 def _get_openmm_forcefield():
     global _OPENMM_FORCEFIELD_SINGLETON
@@ -375,6 +384,193 @@ def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
         target_sasa_in_complex,
         target_sasa_monomer,
     )
+
+def _compute_sasa_metrics_with_freesasa(pdb_file_path, binder_chain="B", target_chain="A"):
+    """
+    Compute SASA-derived metrics using FreeSASA with fallback to Biopython on failure.
+
+    Returns a 5-tuple:
+        (surface_hydrophobicity_fraction, binder_sasa_in_complex, binder_sasa_monomer,
+         target_sasa_in_complex, target_sasa_monomer)
+    """
+    try:
+        if not _HAS_FREESASA:
+            raise RuntimeError("FreeSASA not available")
+
+        # Optional classifier (e.g., NACCESS) via repo file or env var FREESASA_CONFIG
+        classifier_obj = None
+        try:
+            classifier_path = os.environ.get('FREESASA_CONFIG')
+            if not classifier_path or not os.path.isfile(classifier_path):
+                # default to repo-provided NACCESS config
+                module_dir = os.path.dirname(os.path.abspath(__file__))
+                default_cfg = os.path.join(module_dir, 'freesasa_naccess.cfg')
+                if os.path.isfile(default_cfg):
+                    classifier_path = default_cfg
+            if classifier_path and os.path.isfile(classifier_path):
+                classifier_obj = freesasa.Classifier(classifier_path)  # type: ignore[name-defined]
+        except Exception:
+            classifier_obj = None
+
+        # Complex SASA
+        if classifier_obj is not None:
+            structure_complex = freesasa.Structure(pdb_file_path, classifier=classifier_obj)  # type: ignore[name-defined]
+        else:
+            structure_complex = freesasa.Structure(pdb_file_path)  # type: ignore[name-defined]
+        result_complex = freesasa.calc(structure_complex)  # type: ignore[name-defined]
+
+        binder_sasa_in_complex = 0.0
+        target_sasa_in_complex = 0.0
+        try:
+            selection_queries = {
+                'binder': f"chain {str(binder_chain)}",
+                'target': f"chain {str(target_chain)}",
+            }
+            sel_area = freesasa.selectArea(selection_queries, structure_complex, result_complex)  # type: ignore[name-defined]
+            binder_sasa_in_complex = float(sel_area.get('binder', 0.0))
+            target_sasa_in_complex = float(sel_area.get('target', 0.0))
+        except Exception:
+            pass
+
+        # Prepare monomer PDBs via Bio.PDB (only used for chain extraction)
+        parser = PDBParser(QUIET=True)
+        complex_structure_bp = parser.get_structure('complex_for_freesasa', pdb_file_path)
+        complex_model_bp = complex_structure_bp[0]
+
+        binder_sasa_monomer = 0.0
+        target_sasa_monomer = 0.0
+        surface_hydrophobicity_fraction = 0.0
+
+        tmp_binder_path = None
+        tmp_target_path = None
+        try:
+            if binder_chain in complex_model_bp:
+                binder_only_structure = Structure.Structure('binder_only')
+                binder_only_model = Model.Model(0)
+                binder_only_chain = copy.deepcopy(complex_model_bp[binder_chain])
+                binder_only_model.add(binder_only_chain)
+                binder_only_structure.add(binder_only_model)
+
+                io_b = PDBIO()
+                io_b.set_structure(binder_only_structure)
+                tmp_b = tempfile.NamedTemporaryFile(suffix='.pdb', delete=False)
+                tmp_b.close()
+                tmp_binder_path = tmp_b.name
+                io_b.save(tmp_binder_path)
+
+                if classifier_obj is not None:
+                    structure_binder_only = freesasa.Structure(tmp_binder_path, classifier=classifier_obj)  # type: ignore[name-defined]
+                else:
+                    structure_binder_only = freesasa.Structure(tmp_binder_path)  # type: ignore[name-defined]
+                result_binder_only = freesasa.calc(structure_binder_only)  # type: ignore[name-defined]
+                binder_sasa_monomer = float(result_binder_only.totalArea())
+
+                # Prefer FreeSASA classes: hydrophobicity as Apolar/Total area
+                used_classes = False
+                try:
+                    classes = None
+                    if hasattr(freesasa, 'classifyResults'):
+                        classes = freesasa.classifyResults(result_binder_only, structure_binder_only)  # type: ignore[attr-defined]
+                    elif hasattr(freesasa, 'resultClasses'):
+                        # Some builds may expose resultClasses(structure, result)
+                        classes = freesasa.resultClasses(structure_binder_only, result_binder_only)  # type: ignore[attr-defined]
+
+                    if classes is not None:
+                        def _get_key(obj, keys):
+                            if isinstance(obj, dict):
+                                for k in keys:
+                                    if k in obj:
+                                        return obj[k]
+                                return None
+                            # Fallback attribute access
+                            for k in keys:
+                                val = getattr(obj, k, None)
+                                if val is not None:
+                                    return val
+                            return None
+
+                        total_area_val = _get_key(classes, ('Total', 'total', 'TOTAL', 'total_area'))
+                        apolar_area_val = _get_key(classes, ('Apolar', 'apolar', 'APOLAR', 'Non-polar', 'non-polar', 'nonpolar', 'apolar_area'))
+
+                        if total_area_val is not None and apolar_area_val is not None and float(total_area_val) > 0.0:
+                            surface_hydrophobicity_fraction = float(apolar_area_val) / float(total_area_val)
+                            used_classes = True
+                except Exception:
+                    used_classes = False
+
+                if not used_classes:
+                    # Fallback: surface hydrophobicity via residue-level RSA using FreeSASA atom areas
+                    hydrophobic_residue_set = set('ACFILMPVWY')
+                    residue_area_map = {}
+                    num_atoms = structure_binder_only.nAtoms()
+                    for atom_index in range(num_atoms):
+                        resname = structure_binder_only.residueName(atom_index)
+                        chain_label = structure_binder_only.chainLabel(atom_index)
+                        residue_number = structure_binder_only.residueNumber(atom_index)
+                        residue_key = (chain_label, residue_number, resname)
+                        atom_area = float(result_binder_only.atomArea(atom_index))
+                        residue_area_map[residue_key] = residue_area_map.get(residue_key, 0.0) + atom_area
+
+                    num_surface_residues = 0
+                    num_hydrophobic_surface_residues = 0
+                    for (_chain_label, _residue_number, resname), residue_area in residue_area_map.items():
+                        try:
+                            aa_one_letter = seq1(resname)
+                        except Exception:
+                            continue
+                        max_asa = _MAX_ASA.get(aa_one_letter)
+                        if not max_asa or max_asa <= 0:
+                            continue
+                        rsa = residue_area / max_asa
+                        if rsa >= 0.25:
+                            num_surface_residues += 1
+                            if aa_one_letter in hydrophobic_residue_set:
+                                num_hydrophobic_surface_residues += 1
+                    if num_surface_residues > 0:
+                        surface_hydrophobicity_fraction = num_hydrophobic_surface_residues / num_surface_residues
+
+            if target_chain in complex_model_bp:
+                target_only_structure = Structure.Structure('target_only')
+                target_only_model = Model.Model(0)
+                target_only_chain = copy.deepcopy(complex_model_bp[target_chain])
+                target_only_model.add(target_only_chain)
+                target_only_structure.add(target_only_model)
+
+                io_t = PDBIO()
+                io_t.set_structure(target_only_structure)
+                tmp_t = tempfile.NamedTemporaryFile(suffix='.pdb', delete=False)
+                tmp_t.close()
+                tmp_target_path = tmp_t.name
+                io_t.save(tmp_target_path)
+
+                if classifier_obj is not None:
+                    structure_target_only = freesasa.Structure(tmp_target_path, classifier=classifier_obj)  # type: ignore[name-defined]
+                else:
+                    structure_target_only = freesasa.Structure(tmp_target_path)  # type: ignore[name-defined]
+                result_target_only = freesasa.calc(structure_target_only)  # type: ignore[name-defined]
+                target_sasa_monomer = float(result_target_only.totalArea())
+        finally:
+            if tmp_binder_path and os.path.isfile(tmp_binder_path):
+                try:
+                    os.remove(tmp_binder_path)
+                except Exception:
+                    pass
+            if tmp_target_path and os.path.isfile(tmp_target_path):
+                try:
+                    os.remove(tmp_target_path)
+                except Exception:
+                    pass
+
+        return (
+            surface_hydrophobicity_fraction,
+            binder_sasa_in_complex,
+            binder_sasa_monomer,
+            target_sasa_in_complex,
+            target_sasa_monomer,
+        )
+    except Exception as e_fsasa:
+        print(f"[FreeSASA] ERROR for {pdb_file_path}: {e_fsasa}")
+        return _compute_sasa_metrics(pdb_file_path, binder_chain=binder_chain, target_chain=target_chain)
 
 def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True, 
                  openmm_max_iterations=1000, # Safety cap per stage to avoid stalls (set 0 for unlimited)
@@ -713,7 +909,7 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         gc.collect()
         return platform_name_used
 
-def pr_alternative_score_interface(pdb_file, binder_chain="B"):
+def pr_alternative_score_interface(pdb_file, binder_chain="B", sasa_engine="auto"):
     """
     Calculate interface scores using PyRosetta-free alternatives including SCASA shape complementarity.
     
@@ -728,6 +924,10 @@ def pr_alternative_score_interface(pdb_file, binder_chain="B"):
         Path to PDB file
     binder_chain : str
         Chain ID of the binder
+    sasa_engine : str
+        "auto" (default) prefers FreeSASA if installed, else Biopython.
+        "freesasa" forces FreeSASA (falls back to Biopython on error).
+        "biopython" forces Biopython Shrake-Rupley.
         
     Returns
     -------
@@ -744,14 +944,40 @@ def pr_alternative_score_interface(pdb_file, binder_chain="B"):
     for pdb_res_num, aa_type in interface_residues_set.items():
         interface_AA[aa_type] += 1
 
-    # SASA-based calculations using Biopython's Shrake-Rupley with pinned parameters
-    surface_hydrophobicity_fraction, \
-    binder_sasa_in_complex, \
-    binder_sasa_monomer, \
-    target_sasa_in_complex, \
-    target_sasa_monomer = _compute_sasa_metrics(
-        pdb_file, binder_chain=binder_chain, target_chain='A'
-    )
+    # SASA-based calculations: select engine
+    if str(sasa_engine).lower() == "biopython":
+        surface_hydrophobicity_fraction, \
+        binder_sasa_in_complex, \
+        binder_sasa_monomer, \
+        target_sasa_in_complex, \
+        target_sasa_monomer = _compute_sasa_metrics(
+            pdb_file, binder_chain=binder_chain, target_chain='A'
+        )
+    elif str(sasa_engine).lower() == "freesasa":
+        surface_hydrophobicity_fraction, \
+        binder_sasa_in_complex, \
+        binder_sasa_monomer, \
+        target_sasa_in_complex, \
+        target_sasa_monomer = _compute_sasa_metrics_with_freesasa(
+            pdb_file, binder_chain=binder_chain, target_chain='A'
+        )
+    else:
+        if _HAS_FREESASA:
+            surface_hydrophobicity_fraction, \
+            binder_sasa_in_complex, \
+            binder_sasa_monomer, \
+            target_sasa_in_complex, \
+            target_sasa_monomer = _compute_sasa_metrics_with_freesasa(
+                pdb_file, binder_chain=binder_chain, target_chain='A'
+            )
+        else:
+            surface_hydrophobicity_fraction, \
+            binder_sasa_in_complex, \
+            binder_sasa_monomer, \
+            target_sasa_in_complex, \
+            target_sasa_monomer = _compute_sasa_metrics(
+                pdb_file, binder_chain=binder_chain, target_chain='A'
+            )
 
     # Compute buried SASA: binder-side and total (binder + target)
     interface_binder_dSASA = max(binder_sasa_monomer - binder_sasa_in_complex, 0.0)
