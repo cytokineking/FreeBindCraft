@@ -167,14 +167,20 @@ _POLAR_CARBONS = {
 
 @contextlib.contextmanager
 def _suppress_freesasa_warnings():
-    """Temporarily redirect stderr to suppress FreeSASA warnings."""
-    original_stderr = sys.stderr
+    """Temporarily redirect OS-level stderr (fd=2) to suppress FreeSASA warnings."""
     try:
-        with open(os.devnull, 'w') as devnull:
-            sys.stderr = devnull
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        saved_stderr_fd = os.dup(2)
+        os.dup2(devnull_fd, 2)
+        os.close(devnull_fd)
+        try:
             yield
-    finally:
-        sys.stderr = original_stderr
+        finally:
+            os.dup2(saved_stderr_fd, 2)
+            os.close(saved_stderr_fd)
+    except Exception:
+        # Fallback: no suppression
+        yield
 
 # Hydrophobic amino acids set (match PyRosetta hydrophobic/aromatic intent)
 HYDROPHOBIC_AA_SET = set("ACFILMPVWY")
