@@ -639,44 +639,55 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
 
         platform_order = []
         if use_gpu_relax:
+            # Enforce GPU-only usage: only CUDA and OpenCL are supported
             platform_order.extend(['CUDA', 'OpenCL'])
-        
-        platform_order.append('CPU') # CPU is the ultimate fallback
+        else:
+            # Explicit CPU-only path if GPU is not requested
+            platform_order.append('CPU')
 
+        last_exception = None
         for p_name_to_try in platform_order:
-            if simulation: # If a simulation was successfully created in a previous iteration
+            if simulation:
                 break
 
-            current_platform_obj = None
-            current_properties = {}
-            try:
-                current_platform_obj = Platform.getPlatformByName(p_name_to_try)
-                if p_name_to_try == 'CUDA':
-                    current_properties = {'CudaPrecision': 'mixed'}
-                elif p_name_to_try == 'OpenCL':
-                    # Prefer single precision for speed on OpenCL devices
-                    current_properties = {'OpenCLPrecision': 'single'}
-                # For CPU, current_properties remains empty, which is fine.
-                
-                # Attempt to create the Simulation object
-                simulation = app.Simulation(fixer.topology, system, integrator, current_platform_obj, current_properties)
-                platform_name_used = p_name_to_try
-                vprint(f"[OpenMM-Relax] Using platform: {platform_name_used}")
-                break # Exit loop on successful simulation creation
-            
-            except OpenMMException as _:
-                if p_name_to_try == platform_order[-1]: # If this was the last platform in the list
-                    raise # Re-raise the last exception to be caught by the outer try-except block
-            
-            except Exception as _: # Catch any other unexpected error during platform setup/sim init for this attempt
-                if p_name_to_try == platform_order[-1]:
-                    raise
+            # Retry up to 3 times per platform with 1s backoff
+            for attempt_idx in range(1, 4):
+                current_platform_obj = None
+                current_properties = {}
+                try:
+                    current_platform_obj = Platform.getPlatformByName(p_name_to_try)
+                    if p_name_to_try == 'CUDA':
+                        current_properties = {'CudaPrecision': 'mixed'}
+                    elif p_name_to_try == 'OpenCL':
+                        current_properties = {'OpenCLPrecision': 'single'}
+
+                    simulation = app.Simulation(
+                        fixer.topology, system, integrator, current_platform_obj, current_properties
+                    )
+                    platform_name_used = p_name_to_try
+                    vprint(f"[OpenMM-Relax] Using platform: {platform_name_used}")
+                    break
+                except (OpenMMException, Exception) as e:
+                    last_exception = e
+                    if attempt_idx < 3:
+                        vprint(f"[OpenMM-Relax] Platform {p_name_to_try} attempt {attempt_idx} failed; retrying in 1s...")
+                        time.sleep(1.0)
+                        continue
+                    else:
+                        vprint(f"[OpenMM-Relax] Platform {p_name_to_try} failed after {attempt_idx} attempts")
+                        break
+
+            if simulation:
+                break
             
 
         if simulation is None:
-            # This block should ideally not be reached if the loop's exception re-raising works as expected.
-            # It acts as a final safeguard.
-            final_error_msg = f"FATAL: Could not initialize OpenMM Simulation with any platform after trying {', '.join(platform_order)}."
+            final_error_msg = (
+                f"FATAL: Could not initialize OpenMM Simulation with any GPU platform after trying {', '.join(platform_order)}."
+            )
+            # Prefer raising the last captured exception if present
+            if last_exception is not None:
+                raise last_exception
             raise OpenMMException(final_error_msg) 
         
         simulation.context.setPositions(fixer.positions)
