@@ -6,6 +6,7 @@ import gc
 from functions import *
 from functions.generic_utils import insert_data # Explicit import for insert_data
 from functions.biopython_utils import clear_dssp_cache # Explicit import for DSSP cache management
+import logging
 try:
     import resource  # POSIX-only; used to raise RLIMIT_NOFILE (ulimit -n)
 except Exception:
@@ -73,11 +74,19 @@ parser.add_argument('--advanced', '-a', type=str, default='./settings_advanced/d
                     help='Path to the advanced.json file with additional design settings. If not provided, default will be used.')
 parser.add_argument('--no-pyrosetta', action='store_true',
                     help='Run without PyRosetta (skips relaxation and PyRosetta-based scoring)')
+parser.add_argument('--verbose', action='store_true',
+                    help='Enable detailed timing/progress logs')
 
 args = parser.parse_args()
 
 # perform checks of input setting files
 settings_path, filters_path, advanced_path = perform_input_check(args)
+
+# Configure standard logging based on --verbose
+logging.basicConfig(
+    level=(logging.DEBUG if args.verbose else logging.WARNING),
+    format='%(asctime)s %(levelname)s %(name)s: %(message)s'
+)
 
 ### load settings from JSON
 target_settings, advanced_settings, filters = load_json_settings(settings_path, filters_path, advanced_path)

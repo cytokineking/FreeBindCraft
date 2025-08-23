@@ -14,6 +14,7 @@ from Bio.PDB import PDBParser, DSSP, Selection, Polypeptide, PDBIO, Superimposer
 from Bio.SeqUtils.ProtParam import ProteinAnalysis
 from Bio.PDB.Selection import unfold_entities
 from Bio.PDB.Polypeptide import is_aa
+from .logging_utils import vprint
 
 # Global cache for DSSP results to reduce redundant calculations
 _dssp_cache = {}
@@ -63,10 +64,10 @@ def safe_dssp_calculation(model, pdb_file, dssp_path, max_retries=3):
             return dssp
         except Exception as e:
             if attempt < max_retries - 1:
-                print(f"DSSP attempt {attempt + 1} failed for {pdb_file}: {e}. Retrying...")
+                vprint(f"DSSP attempt {attempt + 1} failed for {pdb_file}: {e}. Retrying...")
                 gc.collect()  # Force cleanup before retry
             else:
-                print(f"DSSP calculation failed after {max_retries} attempts for {pdb_file}: {e}")
+                vprint(f"DSSP calculation failed after {max_retries} attempts for {pdb_file}: {e}")
                 # Cache the failure to avoid repeated attempts
                 _dssp_cache[cache_key] = None
                 return None

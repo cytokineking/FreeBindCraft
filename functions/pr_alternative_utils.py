@@ -28,6 +28,7 @@ import contextlib
 import time
 from itertools import zip_longest
 from .generic_utils import clean_pdb
+from .logging_utils import vprint, is_verbose
 from .biopython_utils import hotspot_residues, biopython_align_all_ca
 
 # OpenMM imports
@@ -197,7 +198,7 @@ def _calculate_shape_complementarity(pdb_file_path, binder_chain="B", target_cha
     try:
         start_time = time.time()
         basename = os.path.basename(pdb_file_path)
-        print(f"[SC-RS] Initiating shape complementarity for {basename} (target={target_chain}, binder={binder_chain})", flush=True)
+        vprint(f"[SC-RS] Initiating shape complementarity for {basename} (target={target_chain}, binder={binder_chain})")
         # Resolve sc-rs binary: local next to this file, then env vars, then PATH
         module_dir = os.path.dirname(os.path.abspath(__file__))
         local_candidates = [
@@ -220,10 +221,10 @@ def _calculate_shape_complementarity(pdb_file_path, binder_chain="B", target_cha
 
         if sc_bin is None:
             # Fallback to placeholder if not found
-            print(f"[SC-RS] Binary not found; using placeholder value 0.70 for {basename}", flush=True)
+            vprint(f"[SC-RS] Binary not found; using placeholder value 0.70 for {basename}")
             return 0.70
         else:
-            print(f"[SC-RS] Using binary: {sc_bin}", flush=True)
+            vprint(f"[SC-RS] Using binary: {sc_bin}")
 
         # sc-rs CLI: sc <pdb> <chainA> <chainB> --json; SC is symmetric, pass target first for clarity
         cmd = [sc_bin, pdb_file_path, str(target_chain), str(binder_chain), '--json']
@@ -236,7 +237,7 @@ def _calculate_shape_complementarity(pdb_file_path, binder_chain="B", target_cha
         )
         stdout = (proc.stdout or '').strip()
         if not stdout:
-            print(f"[SC-RS] Empty output; using placeholder 0.70 for {basename}", flush=True)
+            vprint(f"[SC-RS] Empty output; using placeholder 0.70 for {basename}")
             return 0.70
 
         # Parse JSON strictly, else try to extract from mixed output
@@ -259,7 +260,7 @@ def _calculate_shape_complementarity(pdb_file_path, binder_chain="B", target_cha
                     sc_val = float(payload[sc_key])
                     if 0.0 <= sc_val <= 1.0:
                         elapsed = time.time() - start_time
-                        print(f"[SC-RS] Completed for {basename}: SC={sc_val:.2f} in {elapsed:.2f}s", flush=True)
+                        vprint(f"[SC-RS] Completed for {basename}: SC={sc_val:.2f} in {elapsed:.2f}s")
                         return sc_val
             except Exception:
                 pass
@@ -271,7 +272,7 @@ def _calculate_shape_complementarity(pdb_file_path, binder_chain="B", target_cha
         print(f"[SC-RS] WARN: Failed to compute SC for {pdb_file_path}: {e}")
 
     # Fallback to placeholder to keep pipelines running
-    print(f"[SC-RS] Fallback placeholder 0.70 for {os.path.basename(pdb_file_path)}", flush=True)
+    vprint(f"[SC-RS] Fallback placeholder 0.70 for {os.path.basename(pdb_file_path)}")
     return 0.70
 
 def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
@@ -291,7 +292,7 @@ def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
     try:
         t0 = time.time()
         basename = os.path.basename(pdb_file_path)
-        print(f"[SASA-Biopython] Start for {basename} (binder={binder_chain}, target={target_chain})", flush=True)
+        vprint(f"[SASA-Biopython] Start for {basename} (binder={binder_chain}, target={target_chain})")
         parser = PDBParser(QUIET=True)
 
         # Compute atom-level SASA for the entire complex
@@ -349,7 +350,7 @@ def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
             target_sasa_monomer = _chain_total_sasa(target_only_chain)
 
         elapsed = time.time() - t0
-        print(f"[SASA-Biopython] Completed for {basename} in {elapsed:.2f}s", flush=True)
+        vprint(f"[SASA-Biopython] Completed for {basename} in {elapsed:.2f}s")
     except Exception as e_sasa:
         print(f"[Biopython-SASA] ERROR for {pdb_file_path}: {e_sasa}")
         # Fallbacks chosen to match original behavior
@@ -378,7 +379,7 @@ def _compute_sasa_metrics_with_freesasa(pdb_file_path, binder_chain="B", target_
     try:
         t0 = time.time()
         basename = os.path.basename(pdb_file_path)
-        print(f"[SASA-FreeSASA] Start for {basename} (binder={binder_chain}, target={target_chain})", flush=True)
+        vprint(f"[SASA-FreeSASA] Start for {basename} (binder={binder_chain}, target={target_chain})")
         if not _HAS_FREESASA:
             raise RuntimeError("FreeSASA not available")
 
@@ -394,7 +395,7 @@ def _compute_sasa_metrics_with_freesasa(pdb_file_path, binder_chain="B", target_
                     classifier_path = default_cfg
             if classifier_path and os.path.isfile(classifier_path):
                 classifier_obj = freesasa.Classifier(classifier_path)  # type: ignore[name-defined]
-                print(f"[SASA-FreeSASA] Using classifier: {classifier_path}", flush=True)
+                vprint(f"[SASA-FreeSASA] Using classifier: {classifier_path}")
         except Exception:
             classifier_obj = None
 
@@ -500,7 +501,7 @@ def _compute_sasa_metrics_with_freesasa(pdb_file_path, binder_chain="B", target_
                     pass
 
         elapsed = time.time() - t0
-        print(f"[SASA-FreeSASA] Completed for {basename} in {elapsed:.2f}s", flush=True)
+        vprint(f"[SASA-FreeSASA] Completed for {basename} in {elapsed:.2f}s")
         return (
             surface_hydrophobicity_fraction,
             binder_sasa_in_complex,
@@ -540,7 +541,7 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
 
     start_time = time.time()
     basename = os.path.basename(pdb_file_path)
-    print(f"[OpenMM-Relax] Initiating relax for {basename}", flush=True)
+    vprint(f"[OpenMM-Relax] Initiating relax for {basename}")
     best_energy = float('inf') * unit.kilojoule_per_mole # Initialize with units
     best_positions = None
 
@@ -660,7 +661,7 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                 # Attempt to create the Simulation object
                 simulation = app.Simulation(fixer.topology, system, integrator, current_platform_obj, current_properties)
                 platform_name_used = p_name_to_try
-                print(f"[OpenMM-Relax] Using platform: {platform_name_used}", flush=True)
+                vprint(f"[OpenMM-Relax] Using platform: {platform_name_used}")
                 break # Exit loop on successful simulation creation
             
             except OpenMMException as _:
@@ -847,14 +848,14 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         gc.collect()
 
         elapsed_total = time.time() - start_time
-        print(f"[OpenMM-Relax] Completed relax for {basename} in {elapsed_total:.2f}s (platform={platform_name_used})", flush=True)
+        vprint(f"[OpenMM-Relax] Completed relax for {basename} in {elapsed_total:.2f}s (platform={platform_name_used})")
         return platform_name_used
 
     except Exception as _:
         shutil.copy(pdb_file_path, output_pdb_path)
         gc.collect()
         elapsed_total = time.time() - start_time
-        print(f"[OpenMM-Relax] ERROR; copied input to output for {basename} after {elapsed_total:.2f}s", flush=True)
+        print(f"[OpenMM-Relax] ERROR; copied input to output for {basename} after {elapsed_total:.2f}s")
         return platform_name_used
 
 def pr_alternative_score_interface(pdb_file, binder_chain="B", sasa_engine="auto"):
@@ -884,15 +885,15 @@ def pr_alternative_score_interface(pdb_file, binder_chain="B", sasa_engine="auto
     """
     t0_all = time.time()
     basename = os.path.basename(pdb_file)
-    print(f"[Alt-Score] Initiating PyRosetta-free scoring for {basename} (binder={binder_chain}, sasa_engine={sasa_engine})", flush=True)
+    vprint(f"[Alt-Score] Initiating PyRosetta-free scoring for {basename} (binder={binder_chain}, sasa_engine={sasa_engine})")
 
     # Get interface residues via Biopython (works without PyRosetta)
     t0_if = time.time()
-    print(f"[Alt-Score] Finding interface residues (hotspot_residues)...", flush=True)
+    vprint(f"[Alt-Score] Finding interface residues (hotspot_residues)...")
     interface_residues_set = hotspot_residues(pdb_file, binder_chain)
     interface_residues_pdb_ids = [f"{binder_chain}{pdb_res_num}" for pdb_res_num in interface_residues_set.keys()]
     interface_residues_pdb_ids_str = ','.join(interface_residues_pdb_ids)
-    print(f"[Alt-Score] Found {len(interface_residues_pdb_ids)} interface residues in {time.time()-t0_if:.2f}s", flush=True)
+    vprint(f"[Alt-Score] Found {len(interface_residues_pdb_ids)} interface residues in {time.time()-t0_if:.2f}s")
 
     # Initialize amino acid dictionary for interface composition
     interface_AA = {aa: 0 for aa in 'ACDEFGHIKLMNPQRSTVWY'}
@@ -902,7 +903,7 @@ def pr_alternative_score_interface(pdb_file, binder_chain="B", sasa_engine="auto
     # SASA-based calculations: select engine
     t0_sasa = time.time()
     if str(sasa_engine).lower() == "biopython":
-        print(f"[Alt-Score] Computing SASA with Biopython Shrake-Rupley...", flush=True)
+        vprint(f"[Alt-Score] Computing SASA with Biopython Shrake-Rupley...")
         surface_hydrophobicity_fraction, \
         binder_sasa_in_complex, \
         binder_sasa_monomer, \
@@ -911,7 +912,7 @@ def pr_alternative_score_interface(pdb_file, binder_chain="B", sasa_engine="auto
             pdb_file, binder_chain=binder_chain, target_chain='A'
         )
     elif str(sasa_engine).lower() == "freesasa":
-        print(f"[Alt-Score] Computing SASA with FreeSASA...", flush=True)
+        vprint(f"[Alt-Score] Computing SASA with FreeSASA...")
         surface_hydrophobicity_fraction, \
         binder_sasa_in_complex, \
         binder_sasa_monomer, \
@@ -921,7 +922,7 @@ def pr_alternative_score_interface(pdb_file, binder_chain="B", sasa_engine="auto
         )
     else:
         if _HAS_FREESASA:
-            print(f"[Alt-Score] Computing SASA with FreeSASA (auto)...", flush=True)
+            vprint(f"[Alt-Score] Computing SASA with FreeSASA (auto)...")
             surface_hydrophobicity_fraction, \
             binder_sasa_in_complex, \
             binder_sasa_monomer, \
@@ -930,7 +931,7 @@ def pr_alternative_score_interface(pdb_file, binder_chain="B", sasa_engine="auto
                 pdb_file, binder_chain=binder_chain, target_chain='A'
             )
         else:
-            print(f"[Alt-Score] Computing SASA with Biopython (auto fallback)...", flush=True)
+            vprint(f"[Alt-Score] Computing SASA with Biopython (auto fallback)...")
             surface_hydrophobicity_fraction, \
             binder_sasa_in_complex, \
             binder_sasa_monomer, \
@@ -938,7 +939,7 @@ def pr_alternative_score_interface(pdb_file, binder_chain="B", sasa_engine="auto
             target_sasa_monomer = _compute_sasa_metrics(
                 pdb_file, binder_chain=binder_chain, target_chain='A'
             )
-    print(f"[Alt-Score] SASA computations finished in {time.time()-t0_sasa:.2f}s", flush=True)
+    vprint(f"[Alt-Score] SASA computations finished in {time.time()-t0_sasa:.2f}s")
 
     # Compute buried SASA: binder-side and total (binder + target)
     interface_binder_dSASA = max(binder_sasa_monomer - binder_sasa_in_complex, 0.0)
@@ -953,9 +954,9 @@ def pr_alternative_score_interface(pdb_file, binder_chain="B", sasa_engine="auto
 
     # Calculate shape complementarity using SCASA
     t0_sc = time.time()
-    print(f"[Alt-Score] Computing shape complementarity (SC)...", flush=True)
+    vprint(f"[Alt-Score] Computing shape complementarity (SC)...")
     interface_sc = _calculate_shape_complementarity(pdb_file, binder_chain, target_chain='A')
-    print(f"[Alt-Score] SC computation finished in {time.time()-t0_sc:.2f}s", flush=True)
+    vprint(f"[Alt-Score] SC computation finished in {time.time()-t0_sc:.2f}s")
     
     # Fixed placeholder values for metrics that are not currently computed without PyRosetta
     # These values are chosen to pass active filters
@@ -991,5 +992,5 @@ def pr_alternative_score_interface(pdb_file, binder_chain="B", sasa_engine="auto
     # Round float values to two decimals for consistency
     interface_scores = {k: round(v, 2) if isinstance(v, float) else v for k, v in interface_scores.items()}
 
-    print(f"[Alt-Score] Completed scoring for {basename} in {time.time()-t0_all:.2f}s", flush=True)
+    vprint(f"[Alt-Score] Completed scoring for {basename} in {time.time()-t0_all:.2f}s")
     return interface_scores, interface_AA, interface_residues_pdb_ids_str
