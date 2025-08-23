@@ -3,6 +3,7 @@
 ####################################
 ### Import dependencies
 import os, re, shutil, math, pickle
+import time
 import matplotlib.pyplot as plt
 import numpy as np
 import jax
@@ -16,25 +17,30 @@ from colabdesign.shared.utils import copy_dict
 from .biopython_utils import hotspot_residues, calculate_clash_score, calc_ss_percentage, calculate_percentages
 from .pyrosetta_utils import pr_relax, align_pdbs
 from .generic_utils import update_failures
+from .logging_utils import vprint
 
 # hallucinate a binder
 def binder_hallucination(design_name, starting_pdb, chain, target_hotspot_residues, length, seed, helicity_value, design_models, advanced_settings, design_paths, failure_csv):
     model_pdb_path = os.path.join(design_paths["Trajectory"], design_name+".pdb")
 
     # clear GPU memory for new trajectory
+    t0 = time.time()
     clear_mem()
 
     # initialise binder hallucination model
     af_model = mk_afdesign_model(protocol="binder", debug=False, data_dir=advanced_settings["af_params_dir"], 
                                 use_multimer=advanced_settings["use_multimer_design"], num_recycles=advanced_settings["num_recycles_design"],
                                 best_metric='loss')
+    vprint(f"[AF2] Initialised binder model in {time.time()-t0:.2f}s")
 
     # sanity check for hotspots
     if target_hotspot_residues == "":
         target_hotspot_residues = None
 
+    t_prep = time.time()
     af_model.prep_inputs(pdb_filename=starting_pdb, chain=chain, binder_len=length, hotspot=target_hotspot_residues, seed=seed, rm_aa=advanced_settings["omit_AAs"],
                         rm_target_seq=advanced_settings["rm_template_seq_design"], rm_target_sc=advanced_settings["rm_template_sc_design"])
+    vprint(f"[AF2] Prepared inputs in {time.time()-t_prep:.2f}s")
 
     ### Update weights based on specified settings
     af_model.opt["weights"].update({"pae":advanced_settings["weights_pae_intra"],
@@ -94,7 +100,9 @@ def binder_hallucination(design_name, starting_pdb, chain, target_hotspot_residu
     elif advanced_settings["design_algorithm"] == '4stage':
         # initial logits to prescreen trajectory
         print("Stage 1: Test Logits")
+        t_logits = time.time()
         af_model.design_logits(iters=50, e_soft=0.9, models=design_models, num_models=1, sample_models=advanced_settings["sample_models"], save_best=True)
+        vprint(f"[AF2] Stage 1 logits in {time.time()-t_logits:.2f}s")
 
         # determine pLDDT of best iteration according to lowest 'loss' value
         initial_plddt = get_best_plddt(af_model, length)
@@ -105,8 +113,10 @@ def binder_hallucination(design_name, starting_pdb, chain, target_hotspot_residu
             if advanced_settings["optimise_beta"]:
                 # temporarily dump model to assess secondary structure
                 af_model.save_pdb(model_pdb_path)
+                t_dssp = time.time()
                 _, beta, *_ = calc_ss_percentage(model_pdb_path, advanced_settings, 'B')
                 os.remove(model_pdb_path)
+                vprint(f"[AF2] Beta assessment via DSSP in {time.time()-t_dssp:.2f}s")
 
                 # if beta sheeted trajectory is detected then choose to optimise
                 if float(beta) > 15:
@@ -120,8 +130,10 @@ def binder_hallucination(design_name, starting_pdb, chain, target_hotspot_residu
             if logits_iter > 0:
                 print("Stage 1: Additional Logits Optimisation")
                 af_model.clear_best()
+                t_logits2 = time.time()
                 af_model.design_logits(iters=logits_iter, e_soft=1, models=design_models, num_models=1, sample_models=advanced_settings["sample_models"],
                                     ramp_recycles=False, save_best=True)
+                vprint(f"[AF2] Additional logits in {time.time()-t_logits2:.2f}s")
                 af_model._tmp["seq_logits"] = af_model.aux["seq"]["logits"]
                 logit_plddt = get_best_plddt(af_model, length)
                 print("Optimised logit trajectory pLDDT: "+str(logit_plddt))
@@ -132,8 +144,10 @@ def binder_hallucination(design_name, starting_pdb, chain, target_hotspot_residu
             if advanced_settings["temporary_iterations"] > 0:
                 print("Stage 2: Softmax Optimisation")
                 af_model.clear_best()
+                t_soft = time.time()
                 af_model.design_soft(advanced_settings["temporary_iterations"], e_temp=1e-2, models=design_models, num_models=1,
                                     sample_models=advanced_settings["sample_models"], ramp_recycles=False, save_best=True)
+                vprint(f"[AF2] Softmax stage in {time.time()-t_soft:.2f}s")
                 softmax_plddt = get_best_plddt(af_model, length)
             else:
                 softmax_plddt = logit_plddt
@@ -144,8 +158,10 @@ def binder_hallucination(design_name, starting_pdb, chain, target_hotspot_residu
                 if advanced_settings["hard_iterations"] > 0:
                     af_model.clear_best()
                     print("Stage 3: One-hot Optimisation")
+                    t_hard = time.time()
                     af_model.design_hard(advanced_settings["hard_iterations"], temp=1e-2, models=design_models, num_models=1,
                                     sample_models=advanced_settings["sample_models"], dropout=False, ramp_recycles=False, save_best=True)
+                    vprint(f"[AF2] One-hot stage in {time.time()-t_hard:.2f}s")
                     onehot_plddt = get_best_plddt(af_model, length)
 
                 if onehot_plddt > 0.65:
@@ -153,8 +169,10 @@ def binder_hallucination(design_name, starting_pdb, chain, target_hotspot_residu
                     print("One-hot trajectory pLDDT good, continuing: "+str(onehot_plddt))
                     if advanced_settings["greedy_iterations"] > 0:
                         print("Stage 4: PSSM Semigreedy Optimisation")
+                        t_pssm = time.time()
                         af_model.design_pssm_semigreedy(soft_iters=0, hard_iters=advanced_settings["greedy_iterations"], tries=greedy_tries, models=design_models, 
                                                         num_models=1, sample_models=advanced_settings["sample_models"], ramp_models=False, save_best=True)
+                        vprint(f"[AF2] PSSM semigreedy in {time.time()-t_pssm:.2f}s")
 
                 else:
                     update_failures(failure_csv, 'Trajectory_one-hot_pLDDT')
@@ -175,7 +193,9 @@ def binder_hallucination(design_name, starting_pdb, chain, target_hotspot_residu
 
     ### save trajectory PDB
     final_plddt = get_best_plddt(af_model, length)
+    t_save = time.time()
     af_model.save_pdb(model_pdb_path)
+    vprint(f"[AF2] Saved trajectory PDB in {time.time()-t_save:.2f}s")
     af_model.aux["log"]["terminate"] = ""
 
     # let's check whether the trajectory is worth optimising by checking confidence, clashes, and contacts

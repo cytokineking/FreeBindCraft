@@ -12,6 +12,8 @@ import math
 import stat
 import pandas as pd
 import numpy as np
+import time
+from .logging_utils import vprint
 
 # Define labels for dataframes
 def generate_dataframe_labels():
@@ -40,6 +42,7 @@ def generate_dataframe_labels():
 
 # Create base directions of the project
 def generate_directories(design_path):
+    t0 = time.time()
     design_path_names = ["Accepted", "Accepted/Ranked", "Accepted/Animation", "Accepted/Plots", "Accepted/Pickle", "Trajectory",
                         "Trajectory/Relaxed", "Trajectory/Plots", "Trajectory/Clashing", "Trajectory/LowConfidence", "Trajectory/Animation",
                         "Trajectory/Pickle", "MPNN", "MPNN/Binder", "MPNN/Sequences", "MPNN/Relaxed", "Rejected"]
@@ -51,10 +54,12 @@ def generate_directories(design_path):
         os.makedirs(path, exist_ok=True)
         design_paths[name] = path
 
+    vprint(f"[GenUtils] Directories prepared in {time.time()-t0:.2f}s")
     return design_paths
 
 # generate CSV file for tracking designs not passing filters
 def generate_filter_pass_csv(failure_csv, filter_json):
+    t0 = time.time()
     if not os.path.exists(failure_csv):
         with open(filter_json, 'r') as file:
             data = json.load(file)
@@ -93,9 +98,11 @@ def generate_filter_pass_csv(failure_csv, filter_json):
         df.loc[0] = [0] * len(names)
 
         df.to_csv(failure_csv, index=False)
+        vprint(f"[GenUtils] Initialized failure CSV in {time.time()-t0:.2f}s")
 
 # update failure rates from trajectories and early predictions
 def update_failures(failure_csv, failure_column_or_dict):
+    t0 = time.time()
     failure_df = pd.read_csv(failure_csv)
     
     def strip_model_prefix(name):
@@ -123,6 +130,7 @@ def update_failures(failure_csv, failure_column_or_dict):
             failure_df[failure_column] = 1
     
     failure_df.to_csv(failure_csv, index=False)
+    vprint(f"[GenUtils] Updated failure CSV in {time.time()-t0:.2f}s")
 
 # Check if number of trajectories generated
 def check_n_trajectories(design_paths, advanced_settings):
@@ -136,6 +144,7 @@ def check_n_trajectories(design_paths, advanced_settings):
 
 # Check if we have required number of accepted targets, rank them, and analyse sequence and structure properties
 def check_accepted_designs(design_paths, mpnn_csv, final_labels, final_csv, advanced_settings, target_settings, design_labels):
+    t0 = time.time()
     accepted_binders = [f for f in os.listdir(design_paths["Accepted"]) if f.endswith('.pdb') and not f.startswith('.')]
 
     if len(accepted_binders) >= target_settings["number_of_final_designs"]:
@@ -170,6 +179,7 @@ def check_accepted_designs(design_paths, mpnn_csv, final_labels, final_csv, adva
 
         # save the final_df to final_csv
         final_df.to_csv(final_csv, index=False)
+        vprint(f"[GenUtils] Reranking and final CSV write in {time.time()-t0:.2f}s")
 
         # zip large folders to save space
         if advanced_settings["zip_animations"]:
@@ -181,6 +191,7 @@ def check_accepted_designs(design_paths, mpnn_csv, final_labels, final_csv, adva
         return True
 
     else:
+        vprint(f"[GenUtils] Accepted count below target; check in {time.time()-t0:.2f}s")
         return False
 
 # Load required helicity value
@@ -316,14 +327,18 @@ def load_af2_models(af_multimer_setting):
 
 # create csv for insertion of data
 def create_dataframe(csv_file, columns):
+    t0 = time.time()
     if not os.path.exists(csv_file):
         df = pd.DataFrame(columns=columns)
         df.to_csv(csv_file, index=False)
+        vprint(f"[GenUtils] Created CSV {csv_file} in {time.time()-t0:.2f}s")
 
 # insert row of statistics into csv
 def insert_data(csv_file, data_array):
+    t0 = time.time()
     df = pd.DataFrame([data_array])
     df.to_csv(csv_file, mode='a', header=False, index=False)
+    vprint(f"[GenUtils] Appended row to {csv_file} in {time.time()-t0:.2f}s")
 
 # save generated sequence
 def save_fasta(design_name, sequence, design_paths):

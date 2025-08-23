@@ -119,6 +119,11 @@ echo -e "Installing ColabDesign\n"
 pip3 install git+https://github.com/sokrypton/ColabDesign.git --no-deps || { echo -e "Error: Failed to install ColabDesign"; exit 1; }
 python -c "import colabdesign" >/dev/null 2>&1 || { echo -e "Error: colabdesign module not found after installation"; exit 1; }
 
+# install FreeSASA Python module
+echo -e "Installing FreeSASA Python module\n"
+pip3 install freesasa || { echo -e "Warning: Failed to install FreeSASA Python module via pip - FreeSASA SASA calculations will fall back to Biopython"; }
+python -c "import freesasa" >/dev/null 2>&1 && echo -e "FreeSASA Python module installed successfully" || echo -e "Warning: FreeSASA Python module not available - using Biopython fallback for SASA"
+
 # AlphaFold2 weights
 echo -e "Downloading AlphaFold2 model weights \n"
 params_dir="${install_dir}/params"

@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
 """
-Compare PyRosetta vs Biopython (PyRosetta-free) interface metrics for a folder of PDBs.
+Compute PyRosetta, FreeSASA, and Biopython interface metrics for a folder of PDBs.
 
-For each PDB in the provided folder, computes interface metrics twice using
-functions.score_interface:
-  - PyRosetta mode (if available and initialized)
-  - PyRosetta-free Biopython mode (Shrake-Rupley SASA with Chothia radii)
-
-Outputs a CSV with paired columns to facilitate comparison.
+Modeled on compare_pyrosetta_bypass_scores.py, this script emits a CSV with
+side-by-side columns for each engine (rosetta_, freesasa_, biopython_ prefixes).
 
 Usage:
-  python compare_pyrosetta_bypass_scores.py --pdb-dir /path/to/pdb/folder [--output out.csv] [--binder-chain B] [--recursive]
-
-If --pdb-dir is omitted, the script will prompt for it.
+  python compare_interface_metrics_all.py --pdb-dir /path/to/pdbs --binder-chain B \
+      [--output out.csv] [--recursive] [--workers 4] [--no-pyrosetta]
 """
 
 import os
@@ -22,26 +17,26 @@ import argparse
 import json
 import pandas as pd
 
+# Ensure repository root is on sys.path so that 'functions' package can be imported from extras/
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
 from functions.pyrosetta_utils import score_interface, PYROSETTA_AVAILABLE, pr
 from functions.biopython_utils import calculate_clash_score
+from functions import pr_alternative_utils as alt
 
-# Per-process latch for PyRosetta init in parallel mode
 _PROCESS_PYROSETTA_READY = False
 
 
 def ensure_binaries_executable():
-    """Ensure all required binaries in functions/ are executable."""
-    repo_root = os.path.dirname(os.path.abspath(__file__))
-    functions_dir = os.path.join(repo_root, "functions")
-    
+    functions_dir = os.path.join(REPO_ROOT, "functions")
     binaries = ["dssp", "DAlphaBall.gcc", "sc"]
     for binary in binaries:
         binary_path = os.path.join(functions_dir, binary)
         if os.path.isfile(binary_path):
             try:
-                # Check if already executable
                 if not os.access(binary_path, os.X_OK):
-                    # Make executable
                     current_mode = os.stat(binary_path).st_mode
                     os.chmod(binary_path, current_mode | 0o755)
                     print(f"Made {binary} executable", flush=True)
@@ -50,10 +45,9 @@ def ensure_binaries_executable():
 
 
 def try_init_pyrosetta(dalphaball_path: str, verbose: bool = True) -> bool:
-    """Attempt to initialize PyRosetta with sane defaults. Returns True on success, False otherwise."""
     if not PYROSETTA_AVAILABLE or pr is None:
         if verbose:
-            print("PyRosetta not available in this environment; using Biopython-only metrics.", flush=True)
+            print("PyRosetta not available in this environment; skipping Rosetta metrics.", flush=True)
         return False
     init_flags = f"-ignore_unrecognized_res -ignore_zero_occupancy -mute all -holes:dalphaball {dalphaball_path} -corrections::beta_nov16 true -relax:default_repeats 1"
     try:
@@ -65,12 +59,11 @@ def try_init_pyrosetta(dalphaball_path: str, verbose: bool = True) -> bool:
         return True
     except Exception:
         if verbose:
-            print("Failed to initialize PyRosetta; will continue with Biopython-only metrics.", flush=True)
+            print("Failed to initialize PyRosetta; continuing without Rosetta metrics.", flush=True)
         return False
 
 
-def score_one_pdb(pdb_path: str, binder_chain: str, enable_pyrosetta: bool, dalphaball_path: str, verbose: bool = True) -> dict:
-    """Compute both Biopython and (optionally) PyRosetta interface metrics for a single PDB."""
+def score_all_engines(pdb_path: str, binder_chain: str, enable_pyrosetta: bool, dalphaball_path: str, verbose: bool = True) -> dict:
     global _PROCESS_PYROSETTA_READY
     row: dict = {
         "File": os.path.basename(pdb_path),
@@ -78,36 +71,50 @@ def score_one_pdb(pdb_path: str, binder_chain: str, enable_pyrosetta: bool, dalp
         "BinderChain": binder_chain,
     }
 
-    # Lazy per-process PyRosetta init (for parallel mode)
+    # Lazy per-process PyRosetta init
     if enable_pyrosetta and not _PROCESS_PYROSETTA_READY:
         _PROCESS_PYROSETTA_READY = try_init_pyrosetta(dalphaball_path, verbose=False)
 
-    # Biopython (PyRosetta-free) scores
+    # Biopython metrics
     try:
         t0 = time.time()
         if verbose:
-            print(f"[Bypass] Scoring {row['File']} (Biopython)...", flush=True)
-        bypass_scores, bypass_interface_aa, bypass_interface_residues = score_interface(
-            pdb_path, binder_chain=binder_chain, use_pyrosetta=False
+            print(f"[Biopython] Scoring {row['File']}...", flush=True)
+        bio_scores, bio_interface_aa, bio_interface_residues = alt.pr_alternative_score_interface(
+            pdb_path, binder_chain=binder_chain, sasa_engine="biopython"
         )
-        # Prefix for CSV clarity
-        for k, v in bypass_scores.items():
-            row[f"bypass_{k}"] = v
-        row["bypass_InterfaceAAs"] = json.dumps(bypass_interface_aa)
-        row["bypass_InterfaceResidues"] = bypass_interface_residues
+        for k, v in bio_scores.items():
+            row[f"biopython_{k}"] = v
+        row["biopython_InterfaceAAs"] = json.dumps(bio_interface_aa)
+        row["biopython_InterfaceResidues"] = bio_interface_residues
         if verbose:
-            print(f"[Bypass] Done {row['File']} in {time.time()-t0:.2f}s", flush=True)
+            print(f"[Biopython] Done {row['File']} in {time.time()-t0:.2f}s", flush=True)
     except Exception as e:
-        row["bypass_error"] = str(e)
-        if verbose:
-            print(f"[Bypass] ERROR {row['File']}: {e}", flush=True)
+        row["biopython_error"] = str(e)
 
-    # PyRosetta scores (if requested and available)
+    # FreeSASA metrics
+    try:
+        t0 = time.time()
+        if verbose:
+            print(f"[FreeSASA] Scoring {row['File']}...", flush=True)
+        fs_scores, fs_interface_aa, fs_interface_residues = alt.pr_alternative_score_interface(
+            pdb_path, binder_chain=binder_chain, sasa_engine="freesasa"
+        )
+        for k, v in fs_scores.items():
+            row[f"freesasa_{k}"] = v
+        row["freesasa_InterfaceAAs"] = json.dumps(fs_interface_aa)
+        row["freesasa_InterfaceResidues"] = fs_interface_residues
+        if verbose:
+            print(f"[FreeSASA] Done {row['File']} in {time.time()-t0:.2f}s", flush=True)
+    except Exception as e:
+        row["freesasa_error"] = str(e)
+
+    # PyRosetta metrics
     if enable_pyrosetta:
         try:
             t0 = time.time()
             if verbose:
-                print(f"[Rosetta] Scoring {row['File']} (PyRosetta)...", flush=True)
+                print(f"[Rosetta] Scoring {row['File']}...", flush=True)
             rosetta_scores, rosetta_interface_aa, rosetta_interface_residues = score_interface(
                 pdb_path, binder_chain=binder_chain, use_pyrosetta=True
             )
@@ -119,12 +126,10 @@ def score_one_pdb(pdb_path: str, binder_chain: str, enable_pyrosetta: bool, dalp
                 print(f"[Rosetta] Done {row['File']} in {time.time()-t0:.2f}s", flush=True)
         except Exception as e:
             row["rosetta_error"] = str(e)
-            if verbose:
-                print(f"[Rosetta] ERROR {row['File']}: {e}", flush=True)
     else:
         row["rosetta_unavailable"] = True
 
-    # Add clash counts (common reference metrics)
+    # Common reference metrics
     try:
         t0 = time.time()
         row["Clashes_AllAtoms"] = int(calculate_clash_score(pdb_path, threshold=2.4, only_ca=False))
@@ -144,7 +149,6 @@ def score_one_pdb(pdb_path: str, binder_chain: str, enable_pyrosetta: bool, dalp
 
 
 def collect_pdbs(pdb_dir: str, recursive: bool) -> list:
-    """Find PDB files in a directory."""
     pdbs = []
     if recursive:
         for root, _, files in os.walk(pdb_dir):
@@ -159,16 +163,16 @@ def collect_pdbs(pdb_dir: str, recursive: bool) -> list:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Compare PyRosetta vs Biopython interface metrics across PDBs")
+    parser = argparse.ArgumentParser(description="Compute PyRosetta, FreeSASA, and Biopython interface metrics across PDBs")
     parser.add_argument("--pdb-dir", type=str, default=None, help="Folder containing PDB files")
-    parser.add_argument("--output", type=str, default=None, help="Output CSV path; defaults to <pdb-dir>/pyrosetta_bypass_comparison.csv")
+    parser.add_argument("--output", type=str, default=None, help="Output CSV path; defaults to <pdb-dir>/interface_metrics_all.csv")
     parser.add_argument("--binder-chain", type=str, default="B", help="Binder chain ID in the complex PDB (default: B)")
     parser.add_argument("--recursive", action="store_true", help="Scan folder recursively for .pdb files")
     parser.add_argument("--no-pyrosetta", action="store_true", help="Skip attempting to use PyRosetta even if installed")
-    parser.add_argument("--workers", "-w", type=int, default=1, help="Number of worker processes for parallel scoring (default: 1)")
+    parser.add_argument("--workers", "-w", type=int, default=1, help="Number of worker processes (default: 1)")
     args = parser.parse_args()
 
-    # Ensure all binaries are executable
+    # Ensure binaries
     ensure_binaries_executable()
 
     pdb_dir = args.pdb_dir
@@ -183,16 +187,16 @@ def main():
         print(f"Error: directory not found: {pdb_dir}")
         sys.exit(1)
 
-    out_csv = args.output or os.path.join(pdb_dir, "pyrosetta_bypass_comparison.csv")
+    out_csv = args.output or os.path.join(pdb_dir, "interface_metrics_all.csv")
 
-    # Attempt to initialize PyRosetta unless explicitly disabled
+    # Attempt PyRosetta init unless disabled
     enable_pyrosetta = False
+    dalphaball_path = None
     if not args.no_pyrosetta:
-        repo_root = os.path.dirname(os.path.abspath(__file__))
-        dalphaball_path = os.path.join(repo_root, "functions", "DAlphaBall.gcc")
+        dalphaball_path = os.path.join(REPO_ROOT, "functions", "DAlphaBall.gcc")
         enable_pyrosetta = try_init_pyrosetta(dalphaball_path, verbose=True)
         if not enable_pyrosetta:
-            print("Warning: PyRosetta unavailable or failed to initialize; proceeding with Biopython-only metrics.", flush=True)
+            print("Warning: PyRosetta unavailable or failed to initialize; proceeding without Rosetta metrics.", flush=True)
 
     pdb_files = collect_pdbs(pdb_dir, recursive=args.recursive)
     if not pdb_files:
@@ -207,7 +211,7 @@ def main():
         for idx, pdb_path in enumerate(pdb_files, start=1):
             print("")
             print(f"=== [{idx}/{total}] Processing: {os.path.basename(pdb_path)} ===", flush=True)
-            row = score_one_pdb(pdb_path, binder_chain=args.binder_chain, enable_pyrosetta=enable_pyrosetta, dalphaball_path=dalphaball_path, verbose=True)
+            row = score_all_engines(pdb_path, binder_chain=args.binder_chain, enable_pyrosetta=enable_pyrosetta, dalphaball_path=dalphaball_path, verbose=True)
             rows.append(row)
     else:
         print(f"Using {workers} workers for parallel scoring...", flush=True)
@@ -216,7 +220,7 @@ def main():
         with ProcessPoolExecutor(max_workers=workers) as ex:
             future_to_path = {}
             for pdb_path in pdb_files:
-                fut = ex.submit(score_one_pdb, pdb_path, args.binder_chain, enable_pyrosetta, dalphaball_path, False)
+                fut = ex.submit(score_all_engines, pdb_path, args.binder_chain, enable_pyrosetta, dalphaball_path, False)
                 future_to_path[fut] = pdb_path
                 submitted += 1
             completed = 0

@@ -15,7 +15,6 @@ Helper Functions:
     _create_lj_repulsive_force: Custom LJ repulsion for clash resolution
     _create_backbone_restraint_force: Backbone position restraints
     _chain_total_sasa: Calculate total SASA for a chain
-    _chain_hydrophobic_sasa: Calculate hydrophobic SASA
 """
 
 import gc
@@ -23,9 +22,13 @@ import shutil
 import copy
 import os
 import json
+import tempfile
 import subprocess
+import contextlib
+import time
 from itertools import zip_longest
 from .generic_utils import clean_pdb
+from .logging_utils import vprint
 from .biopython_utils import hotspot_residues, biopython_align_all_ca
 
 # OpenMM imports
@@ -41,11 +44,40 @@ from Bio.PDB.SASA import ShrakeRupley
 # Cache a single OpenMM ForceField instance to avoid repeated XML parsing per relaxation
 _OPENMM_FORCEFIELD_SINGLETON = None
 
+# Optional FreeSASA availability
+try:
+    import freesasa  # type: ignore
+    _HAS_FREESASA = True
+except Exception:
+    freesasa = None  # type: ignore
+    _HAS_FREESASA = False
+
 def _get_openmm_forcefield():
     global _OPENMM_FORCEFIELD_SINGLETON
     if _OPENMM_FORCEFIELD_SINGLETON is None:
         _OPENMM_FORCEFIELD_SINGLETON = app.ForceField('amber14-all.xml', 'implicit/obc2.xml')
     return _OPENMM_FORCEFIELD_SINGLETON
+
+def _reset_opencl_on_failure(simulation=None):
+    """Best-effort OpenCL reset between retries: free AF/JAX VRAM, drop OpenMM Context, GC."""
+    try:
+        try:
+            from colabdesign import clear_mem as _cd_clear_mem  # type: ignore
+            _cd_clear_mem()
+        except Exception:
+            pass
+        try:
+            if simulation is not None:
+                # Touch context to ensure it exists, then drop reference
+                try:
+                    _ = simulation.context.getPlatform()
+                except Exception:
+                    pass
+                del simulation
+        except Exception:
+            pass
+    finally:
+        gc.collect()
 
 # Helper function for k conversion
 def _k_kj_per_nm2(k_kcal_A2):
@@ -135,54 +167,32 @@ def _create_backbone_restraint_force(system, fixer, restraint_k_kcal_mol_A2):
 # Chothia/NACCESS-like atomic radii (heavy atoms dominate SASA)
 R_CHOTHIA = {"H": 1.20, "C": 1.70, "N": 1.55, "O": 1.52, "S": 1.80}
 
-# Max ASA (Tien et al. 2013, approximate; for RSA calculation)
-_MAX_ASA = {
-    'A': 121.0, 'R': 265.0, 'N': 187.0, 'D': 187.0, 'C': 148.0,
-    'Q': 214.0, 'E': 214.0, 'G': 97.0,  'H': 216.0, 'I': 195.0,
-    'L': 191.0, 'K': 230.0, 'M': 203.0, 'F': 228.0, 'P': 154.0,
-    'S': 143.0, 'T': 163.0, 'W': 264.0, 'Y': 255.0, 'V': 165.0,
-}
+# (Unused) _MAX_ASA removed during cleanup.
 
-# Residue-specific polar carbons to exclude from hydrophobic SASA
-_POLAR_CARBONS = {
-    "ASP": {"CG"},
-    "GLU": {"CD"},
-    "ASN": {"CG"},
-    "GLN": {"CD"},
-    "SER": {"CB"},
-    "THR": {"CB"},
-    "TYR": {"CZ"},
-}
+# (Unused) Residue-specific polar carbons mapping removed during cleanup.
 
-def _is_hydrophobic_atom(residue, atom):
-    resn = residue.get_resname()
-    name = atom.get_id()
-    elem = (atom.element or "").upper()
-    # Only side-chain carbon/sulfur; exclude backbone carbonyl C and CA
-    if elem not in ("C", "S"):
-        return False
-    if name in ("C", "CA"):
-        return False
-    # Exclude residue-specific polar carbons
-    if name in _POLAR_CARBONS.get(resn, set()):
-        return False
-    # Ignore altlocs other than blank/A for determinism
-    alt = atom.get_altloc()
-    if alt not in (" ", "", "A"):
-        return False
-    return True
+@contextlib.contextmanager
+def _suppress_freesasa_warnings():
+    """Temporarily redirect OS-level stderr (fd=2) to suppress FreeSASA warnings."""
+    try:
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        saved_stderr_fd = os.dup(2)
+        os.dup2(devnull_fd, 2)
+        os.close(devnull_fd)
+        try:
+            yield
+        finally:
+            os.dup2(saved_stderr_fd, 2)
+            os.close(saved_stderr_fd)
+    except Exception:
+        # Fallback: no suppression
+        yield
+
+# Hydrophobic amino acids set (match PyRosetta hydrophobic/aromatic intent)
+HYDROPHOBIC_AA_SET = set("ACFILMPVWY")
 
 def _chain_total_sasa(chain_entity):
     return sum(getattr(atom, "sasa", 0.0) for atom in chain_entity.get_atoms())
-
-def _chain_hydrophobic_sasa(chain_entity):
-    hydrophobic_sasa_sum = 0.0
-    for residue in chain_entity:
-        if Polypeptide.is_aa(residue, standard=True):
-            for atom in residue.get_atoms():
-                if _is_hydrophobic_atom(residue, atom):
-                    hydrophobic_sasa_sum += getattr(atom, "sasa", 0.0)
-    return hydrophobic_sasa_sum
 
 def _calculate_shape_complementarity(pdb_file_path, binder_chain="B", target_chain="A", distance=4.0):
     """
@@ -207,6 +217,9 @@ def _calculate_shape_complementarity(pdb_file_path, binder_chain="B", target_cha
         Shape complementarity in [0, 1]
     """
     try:
+        start_time = time.time()
+        basename = os.path.basename(pdb_file_path)
+        vprint(f"[SC-RS] Initiating shape complementarity for {basename} (target={target_chain}, binder={binder_chain})")
         # Resolve sc-rs binary: local next to this file, then env vars, then PATH
         module_dir = os.path.dirname(os.path.abspath(__file__))
         local_candidates = [
@@ -229,7 +242,10 @@ def _calculate_shape_complementarity(pdb_file_path, binder_chain="B", target_cha
 
         if sc_bin is None:
             # Fallback to placeholder if not found
+            vprint(f"[SC-RS] Binary not found; using placeholder value 0.70 for {basename}")
             return 0.70
+        else:
+            vprint(f"[SC-RS] Using binary: {sc_bin}")
 
         # sc-rs CLI: sc <pdb> <chainA> <chainB> --json; SC is symmetric, pass target first for clarity
         cmd = [sc_bin, pdb_file_path, str(target_chain), str(binder_chain), '--json']
@@ -242,6 +258,7 @@ def _calculate_shape_complementarity(pdb_file_path, binder_chain="B", target_cha
         )
         stdout = (proc.stdout or '').strip()
         if not stdout:
+            vprint(f"[SC-RS] Empty output; using placeholder 0.70 for {basename}")
             return 0.70
 
         # Parse JSON strictly, else try to extract from mixed output
@@ -257,11 +274,15 @@ def _calculate_shape_complementarity(pdb_file_path, binder_chain="B", target_cha
             except Exception:
                 payload = None
 
-        if isinstance(payload, dict) and 'sc_value' in payload:
+        if isinstance(payload, dict):
             try:
-                sc_val = float(payload['sc_value'])
-                if 0.0 <= sc_val <= 1.0:
-                    return sc_val
+                sc_key = 'sc' if 'sc' in payload else ('sc_value' if 'sc_value' in payload else None)
+                if sc_key is not None:
+                    sc_val = float(payload[sc_key])
+                    if 0.0 <= sc_val <= 1.0:
+                        elapsed = time.time() - start_time
+                        vprint(f"[SC-RS] Completed for {basename}: SC={sc_val:.2f} in {elapsed:.2f}s")
+                        return sc_val
             except Exception:
                 pass
     except subprocess.TimeoutExpired:
@@ -272,6 +293,7 @@ def _calculate_shape_complementarity(pdb_file_path, binder_chain="B", target_cha
         print(f"[SC-RS] WARN: Failed to compute SC for {pdb_file_path}: {e}")
 
     # Fallback to placeholder to keep pipelines running
+    vprint(f"[SC-RS] Fallback placeholder 0.70 for {os.path.basename(pdb_file_path)}")
     return 0.70
 
 def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
@@ -289,6 +311,9 @@ def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
     target_sasa_monomer = 0.0
 
     try:
+        t0 = time.time()
+        basename = os.path.basename(pdb_file_path)
+        vprint(f"[SASA-Biopython] Start for {basename} (binder={binder_chain}, target={target_chain})")
         parser = PDBParser(QUIET=True)
 
         # Compute atom-level SASA for the entire complex
@@ -307,7 +332,7 @@ def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
             target_chain_in_complex = complex_model[target_chain]
             target_sasa_in_complex = _chain_total_sasa(target_chain_in_complex)
 
-        # Binder monomer SASA and surface hydrophobicity fraction
+        # Binder monomer SASA and surface hydrophobicity fraction (area-based)
         if binder_chain in complex_model:
             binder_only_structure = Structure.Structure('binder_only')
             binder_only_model = Model.Model(0)
@@ -319,32 +344,18 @@ def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
             sr_mono.compute(binder_only_model, level='A')
             binder_sasa_monomer = _chain_total_sasa(binder_only_chain)
 
-            # Compute surface hydrophobicity using residue-level RSA thresholding
-            hydrophobic_residue_set = set('ACFILMPVWY')
-            num_surface_residues = 0
-            num_hydrophobic_surface_residues = 0
+            # Residue-based hydrophobic surface fraction (sum residue SASA for hydrophobic residues)
+            hydrophobic_res_sasa = 0.0
             for residue in binder_only_chain:
-                if not Polypeptide.is_aa(residue, standard=True):
-                    continue
-                residue_sasa = 0.0
-                for atom in residue.get_atoms():
-                    residue_sasa += getattr(atom, 'sasa', 0.0)
-                try:
-                    aa_one_letter = seq1(residue.get_resname())
-                except Exception:
-                    continue
-                max_asa = _MAX_ASA.get(aa_one_letter)
-                if not max_asa or max_asa <= 0:
-                    continue
-                rsa = residue_sasa / max_asa
-                if rsa >= 0.25:
-                    num_surface_residues += 1
-                    if aa_one_letter in hydrophobic_residue_set:
-                        num_hydrophobic_surface_residues += 1
-            if num_surface_residues > 0:
-                surface_hydrophobicity_fraction = num_hydrophobic_surface_residues / num_surface_residues
-            else:
-                surface_hydrophobicity_fraction = 0.0
+                if Polypeptide.is_aa(residue, standard=True):
+                    try:
+                        aa1 = seq1(residue.get_resname()).upper()
+                    except Exception:
+                        aa1 = ''
+                    if aa1 in HYDROPHOBIC_AA_SET:
+                        res_sasa = sum(getattr(atom, 'sasa', 0.0) for atom in residue.get_atoms())
+                        hydrophobic_res_sasa += res_sasa
+            surface_hydrophobicity_fraction = (hydrophobic_res_sasa / binder_sasa_monomer) if binder_sasa_monomer > 0.0 else 0.0
         else:
             surface_hydrophobicity_fraction = 0.0
 
@@ -359,6 +370,8 @@ def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
             sr_target_mono.compute(target_only_model, level='A')
             target_sasa_monomer = _chain_total_sasa(target_only_chain)
 
+        elapsed = time.time() - t0
+        vprint(f"[SASA-Biopython] Completed for {basename} in {elapsed:.2f}s")
     except Exception as e_sasa:
         print(f"[Biopython-SASA] ERROR for {pdb_file_path}: {e_sasa}")
         # Fallbacks chosen to match original behavior
@@ -375,6 +388,151 @@ def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
         target_sasa_in_complex,
         target_sasa_monomer,
     )
+
+def _compute_sasa_metrics_with_freesasa(pdb_file_path, binder_chain="B", target_chain="A"):
+    """
+    Compute SASA-derived metrics using FreeSASA with fallback to Biopython on failure.
+
+    Returns a 5-tuple:
+        (surface_hydrophobicity_fraction, binder_sasa_in_complex, binder_sasa_monomer,
+         target_sasa_in_complex, target_sasa_monomer)
+    """
+    try:
+        t0 = time.time()
+        basename = os.path.basename(pdb_file_path)
+        vprint(f"[SASA-FreeSASA] Start for {basename} (binder={binder_chain}, target={target_chain})")
+        if not _HAS_FREESASA:
+            raise RuntimeError("FreeSASA not available")
+
+        # Optional classifier (e.g., NACCESS) via repo file or env var FREESASA_CONFIG
+        classifier_obj = None
+        try:
+            classifier_path = os.environ.get('FREESASA_CONFIG')
+            if not classifier_path or not os.path.isfile(classifier_path):
+                # default to repo-provided NACCESS config
+                module_dir = os.path.dirname(os.path.abspath(__file__))
+                default_cfg = os.path.join(module_dir, 'freesasa_naccess.cfg')
+                if os.path.isfile(default_cfg):
+                    classifier_path = default_cfg
+            if classifier_path and os.path.isfile(classifier_path):
+                classifier_obj = freesasa.Classifier(classifier_path)  # type: ignore[name-defined]
+                vprint(f"[SASA-FreeSASA] Using classifier: {classifier_path}")
+        except Exception:
+            classifier_obj = None
+
+        # Complex SASA
+        if classifier_obj is not None:
+            structure_complex = freesasa.Structure(pdb_file_path, classifier=classifier_obj)  # type: ignore[name-defined]
+        else:
+            structure_complex = freesasa.Structure(pdb_file_path)  # type: ignore[name-defined]
+        result_complex = freesasa.calc(structure_complex)  # type: ignore[name-defined]
+
+        binder_sasa_in_complex = 0.0
+        target_sasa_in_complex = 0.0
+        try:
+            # FreeSASA Python API expects a list of selection definition strings: "name, selector"
+            selection_defs = [
+                f"binder, chain {str(binder_chain)}",
+                f"target, chain {str(target_chain)}",
+            ]
+            sel_area = freesasa.selectArea(selection_defs, structure_complex, result_complex)  # type: ignore[name-defined]
+            # sel_area is a dict-like mapping from selection name to area
+            binder_sasa_in_complex = float(sel_area.get('binder', 0.0))
+            target_sasa_in_complex = float(sel_area.get('target', 0.0))
+        except Exception:
+            pass
+
+        # Prepare monomer PDBs via Bio.PDB (only used for chain extraction)
+        parser = PDBParser(QUIET=True)
+        complex_structure_bp = parser.get_structure('complex_for_freesasa', pdb_file_path)
+        complex_model_bp = complex_structure_bp[0]
+
+        binder_sasa_monomer = 0.0
+        target_sasa_monomer = 0.0
+        surface_hydrophobicity_fraction = 0.0
+
+        tmp_binder_path = None
+        tmp_target_path = None
+        try:
+            if binder_chain in complex_model_bp:
+                binder_only_structure = Structure.Structure('binder_only')
+                binder_only_model = Model.Model(0)
+                binder_only_chain = copy.deepcopy(complex_model_bp[binder_chain])
+                binder_only_model.add(binder_only_chain)
+                binder_only_structure.add(binder_only_model)
+
+                io_b = PDBIO()
+                io_b.set_structure(binder_only_structure)
+                tmp_b = tempfile.NamedTemporaryFile(suffix='.pdb', delete=False)
+                tmp_b.close()
+                tmp_binder_path = tmp_b.name
+                io_b.save(tmp_binder_path)
+
+                if classifier_obj is not None:
+                    structure_binder_only = freesasa.Structure(tmp_binder_path, classifier=classifier_obj)  # type: ignore[name-defined]
+                else:
+                    structure_binder_only = freesasa.Structure(tmp_binder_path)  # type: ignore[name-defined]
+                result_binder_only = freesasa.calc(structure_binder_only)  # type: ignore[name-defined]
+                binder_sasa_monomer = float(result_binder_only.totalArea())
+
+                # FreeSASA residue selection only: hydrophobic residues / total (no fallback)
+                try:
+                    sel_defs = [
+                        "hydro, resn ala+val+leu+ile+met+phe+pro+trp+tyr+cys"
+                    ]
+                    with _suppress_freesasa_warnings():
+                        sel_area = freesasa.selectArea(sel_defs, structure_binder_only, result_binder_only)  # type: ignore[name-defined]
+                    hydro_area = float(sel_area.get('hydro', 0.0))
+                    if binder_sasa_monomer > 0.0:
+                        surface_hydrophobicity_fraction = hydro_area / binder_sasa_monomer
+                except Exception:
+                    # Keep default 0.0 if selection fails
+                    pass
+
+            if target_chain in complex_model_bp:
+                target_only_structure = Structure.Structure('target_only')
+                target_only_model = Model.Model(0)
+                target_only_chain = copy.deepcopy(complex_model_bp[target_chain])
+                target_only_model.add(target_only_chain)
+                target_only_structure.add(target_only_model)
+
+                io_t = PDBIO()
+                io_t.set_structure(target_only_structure)
+                tmp_t = tempfile.NamedTemporaryFile(suffix='.pdb', delete=False)
+                tmp_t.close()
+                tmp_target_path = tmp_t.name
+                io_t.save(tmp_target_path)
+
+                if classifier_obj is not None:
+                    structure_target_only = freesasa.Structure(tmp_target_path, classifier=classifier_obj)  # type: ignore[name-defined]
+                else:
+                    structure_target_only = freesasa.Structure(tmp_target_path)  # type: ignore[name-defined]
+                result_target_only = freesasa.calc(structure_target_only)  # type: ignore[name-defined]
+                target_sasa_monomer = float(result_target_only.totalArea())
+        finally:
+            if tmp_binder_path and os.path.isfile(tmp_binder_path):
+                try:
+                    os.remove(tmp_binder_path)
+                except Exception:
+                    pass
+            if tmp_target_path and os.path.isfile(tmp_target_path):
+                try:
+                    os.remove(tmp_target_path)
+                except Exception:
+                    pass
+
+        elapsed = time.time() - t0
+        vprint(f"[SASA-FreeSASA] Completed for {basename} in {elapsed:.2f}s")
+        return (
+            surface_hydrophobicity_fraction,
+            binder_sasa_in_complex,
+            binder_sasa_monomer,
+            target_sasa_in_complex,
+            target_sasa_monomer,
+        )
+    except Exception as e_fsasa:
+        print(f"[FreeSASA] ERROR for {pdb_file_path}: {e_fsasa}")
+        return _compute_sasa_metrics(pdb_file_path, binder_chain=binder_chain, target_chain=target_chain)
 
 def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True, 
                  openmm_max_iterations=1000, # Safety cap per stage to avoid stalls (set 0 for unlimited)
@@ -402,6 +560,9 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         Name of the OpenMM platform actually used (e.g., 'CUDA', 'OpenCL', or 'CPU').
     """
 
+    start_time = time.time()
+    basename = os.path.basename(pdb_file_path)
+    vprint(f"[OpenMM-Relax] Initiating relax for {basename}")
     best_energy = float('inf') * unit.kilojoule_per_mole # Initialize with units
     best_positions = None
 
@@ -499,43 +660,58 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
 
         platform_order = []
         if use_gpu_relax:
-            platform_order.extend(['CUDA', 'OpenCL'])
-        
-        platform_order.append('CPU') # CPU is the ultimate fallback
+            # Enforce GPU-only usage: OpenCL only per environment constraints
+            platform_order.extend(['OpenCL'])
+        else:
+            # Explicit CPU-only path if GPU is not requested
+            platform_order.append('CPU')
 
+        last_exception = None
         for p_name_to_try in platform_order:
-            if simulation: # If a simulation was successfully created in a previous iteration
+            if simulation:
                 break
 
-            current_platform_obj = None
-            current_properties = {}
-            try:
-                current_platform_obj = Platform.getPlatformByName(p_name_to_try)
-                if p_name_to_try == 'CUDA':
-                    current_properties = {'CudaPrecision': 'mixed'}
-                elif p_name_to_try == 'OpenCL':
-                    # Prefer single precision for speed on OpenCL devices
-                    current_properties = {'OpenCLPrecision': 'single'}
-                # For CPU, current_properties remains empty, which is fine.
-                
-                # Attempt to create the Simulation object
-                simulation = app.Simulation(fixer.topology, system, integrator, current_platform_obj, current_properties)
-                platform_name_used = p_name_to_try
-                break # Exit loop on successful simulation creation
-            
-            except OpenMMException as _:
-                if p_name_to_try == platform_order[-1]: # If this was the last platform in the list
-                    raise # Re-raise the last exception to be caught by the outer try-except block
-            
-            except Exception as _: # Catch any other unexpected error during platform setup/sim init for this attempt
-                if p_name_to_try == platform_order[-1]:
-                    raise
+            # Retry up to 3 times per platform with 1s backoff
+            for attempt_idx in range(1, 4):
+                # ensure fresh simulation object per attempt
+                simulation = None
+                current_platform_obj = None
+                current_properties = {}
+                try:
+                    current_platform_obj = Platform.getPlatformByName(p_name_to_try)
+                    if p_name_to_try == 'CUDA':
+                        current_properties = {'CudaPrecision': 'mixed'}
+                    elif p_name_to_try == 'OpenCL':
+                        current_properties = {'OpenCLPrecision': 'single'}
+
+                    simulation = app.Simulation(
+                        fixer.topology, system, integrator, current_platform_obj, current_properties
+                    )
+                    platform_name_used = p_name_to_try
+                    vprint(f"[OpenMM-Relax] Using platform: {platform_name_used}")
+                    break
+                except (OpenMMException, Exception) as e:
+                    last_exception = e
+                    if attempt_idx < 3:
+                        vprint(f"[OpenMM-Relax] Platform {p_name_to_try} attempt {attempt_idx} failed; resetting OpenCL and retrying in 1s...")
+                        _reset_opencl_on_failure(simulation)
+                        time.sleep(1.0)
+                        continue
+                    else:
+                        vprint(f"[OpenMM-Relax] Platform {p_name_to_try} failed after {attempt_idx} attempts")
+                        break
+
+            if simulation:
+                break
             
 
         if simulation is None:
-            # This block should ideally not be reached if the loop's exception re-raising works as expected.
-            # It acts as a final safeguard.
-            final_error_msg = f"FATAL: Could not initialize OpenMM Simulation with any platform after trying {', '.join(platform_order)}."
+            final_error_msg = (
+                f"FATAL: Could not initialize OpenMM Simulation with any GPU platform after trying {', '.join(platform_order)}."
+            )
+            # Prefer raising the last captured exception if present
+            if last_exception is not None:
+                raise last_exception
             raise OpenMMException(final_error_msg) 
         
         simulation.context.setPositions(fixer.positions)
@@ -706,14 +882,18 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
             pass
         gc.collect()
 
+        elapsed_total = time.time() - start_time
+        vprint(f"[OpenMM-Relax] Completed relax for {basename} in {elapsed_total:.2f}s (platform={platform_name_used})")
         return platform_name_used
 
     except Exception as _:
         shutil.copy(pdb_file_path, output_pdb_path)
         gc.collect()
+        elapsed_total = time.time() - start_time
+        print(f"[OpenMM-Relax] ERROR; copied input to output for {basename} after {elapsed_total:.2f}s")
         return platform_name_used
 
-def pr_alternative_score_interface(pdb_file, binder_chain="B"):
+def pr_alternative_score_interface(pdb_file, binder_chain="B", sasa_engine="auto"):
     """
     Calculate interface scores using PyRosetta-free alternatives including SCASA shape complementarity.
     
@@ -728,30 +908,73 @@ def pr_alternative_score_interface(pdb_file, binder_chain="B"):
         Path to PDB file
     binder_chain : str
         Chain ID of the binder
+    sasa_engine : str
+        "auto" (default) prefers FreeSASA if installed, else Biopython.
+        "freesasa" forces FreeSASA (falls back to Biopython on error).
+        "biopython" forces Biopython Shrake-Rupley.
         
     Returns
     -------
     tuple
         (interface_scores, interface_AA, interface_residues_pdb_ids_str)
     """
+    t0_all = time.time()
+    basename = os.path.basename(pdb_file)
+    vprint(f"[Alt-Score] Initiating PyRosetta-free scoring for {basename} (binder={binder_chain}, sasa_engine={sasa_engine})")
+
     # Get interface residues via Biopython (works without PyRosetta)
+    t0_if = time.time()
+    vprint(f"[Alt-Score] Finding interface residues (hotspot_residues)...")
     interface_residues_set = hotspot_residues(pdb_file, binder_chain)
     interface_residues_pdb_ids = [f"{binder_chain}{pdb_res_num}" for pdb_res_num in interface_residues_set.keys()]
     interface_residues_pdb_ids_str = ','.join(interface_residues_pdb_ids)
+    vprint(f"[Alt-Score] Found {len(interface_residues_pdb_ids)} interface residues in {time.time()-t0_if:.2f}s")
 
     # Initialize amino acid dictionary for interface composition
     interface_AA = {aa: 0 for aa in 'ACDEFGHIKLMNPQRSTVWY'}
     for pdb_res_num, aa_type in interface_residues_set.items():
         interface_AA[aa_type] += 1
 
-    # SASA-based calculations using Biopython's Shrake-Rupley with pinned parameters
-    surface_hydrophobicity_fraction, \
-    binder_sasa_in_complex, \
-    binder_sasa_monomer, \
-    target_sasa_in_complex, \
-    target_sasa_monomer = _compute_sasa_metrics(
-        pdb_file, binder_chain=binder_chain, target_chain='A'
-    )
+    # SASA-based calculations: select engine
+    t0_sasa = time.time()
+    if str(sasa_engine).lower() == "biopython":
+        vprint(f"[Alt-Score] Computing SASA with Biopython Shrake-Rupley...")
+        surface_hydrophobicity_fraction, \
+        binder_sasa_in_complex, \
+        binder_sasa_monomer, \
+        target_sasa_in_complex, \
+        target_sasa_monomer = _compute_sasa_metrics(
+            pdb_file, binder_chain=binder_chain, target_chain='A'
+        )
+    elif str(sasa_engine).lower() == "freesasa":
+        vprint(f"[Alt-Score] Computing SASA with FreeSASA...")
+        surface_hydrophobicity_fraction, \
+        binder_sasa_in_complex, \
+        binder_sasa_monomer, \
+        target_sasa_in_complex, \
+        target_sasa_monomer = _compute_sasa_metrics_with_freesasa(
+            pdb_file, binder_chain=binder_chain, target_chain='A'
+        )
+    else:
+        if _HAS_FREESASA:
+            vprint(f"[Alt-Score] Computing SASA with FreeSASA (auto)...")
+            surface_hydrophobicity_fraction, \
+            binder_sasa_in_complex, \
+            binder_sasa_monomer, \
+            target_sasa_in_complex, \
+            target_sasa_monomer = _compute_sasa_metrics_with_freesasa(
+                pdb_file, binder_chain=binder_chain, target_chain='A'
+            )
+        else:
+            vprint(f"[Alt-Score] Computing SASA with Biopython (auto fallback)...")
+            surface_hydrophobicity_fraction, \
+            binder_sasa_in_complex, \
+            binder_sasa_monomer, \
+            target_sasa_in_complex, \
+            target_sasa_monomer = _compute_sasa_metrics(
+                pdb_file, binder_chain=binder_chain, target_chain='A'
+            )
+    vprint(f"[Alt-Score] SASA computations finished in {time.time()-t0_sasa:.2f}s")
 
     # Compute buried SASA: binder-side and total (binder + target)
     interface_binder_dSASA = max(binder_sasa_monomer - binder_sasa_in_complex, 0.0)
@@ -761,10 +984,14 @@ def pr_alternative_score_interface(pdb_file, binder_chain="B"):
     except Exception as e_idsasa:
         print(f"[Biopython-SASA] WARN interface_target_dSASA for {pdb_file}: {e_idsasa}")
     interface_total_dSASA = interface_binder_dSASA + interface_target_dSASA
-    interface_binder_fraction = (interface_binder_dSASA / binder_sasa_monomer * 100.0) if binder_sasa_monomer > 0.0 else 0.0
+    # Align with PyRosetta: use TOTAL interface dSASA divided by binder SASA IN COMPLEX
+    interface_binder_fraction = (interface_total_dSASA / binder_sasa_in_complex * 100.0) if binder_sasa_in_complex > 0.0 else 0.0
 
     # Calculate shape complementarity using SCASA
+    t0_sc = time.time()
+    vprint(f"[Alt-Score] Computing shape complementarity (SC)...")
     interface_sc = _calculate_shape_complementarity(pdb_file, binder_chain, target_chain='A')
+    vprint(f"[Alt-Score] SC computation finished in {time.time()-t0_sc:.2f}s")
     
     # Fixed placeholder values for metrics that are not currently computed without PyRosetta
     # These values are chosen to pass active filters
@@ -800,4 +1027,5 @@ def pr_alternative_score_interface(pdb_file, binder_chain="B"):
     # Round float values to two decimals for consistency
     interface_scores = {k: round(v, 2) if isinstance(v, float) else v for k, v in interface_scores.items()}
 
+    vprint(f"[Alt-Score] Completed scoring for {basename} in {time.time()-t0_all:.2f}s")
     return interface_scores, interface_AA, interface_residues_pdb_ids_str

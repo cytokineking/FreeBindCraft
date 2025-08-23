@@ -6,6 +6,30 @@ import gc
 from functions import *
 from functions.generic_utils import insert_data # Explicit import for insert_data
 from functions.biopython_utils import clear_dssp_cache # Explicit import for DSSP cache management
+import logging
+try:
+    import resource  # POSIX-only; used to raise RLIMIT_NOFILE (ulimit -n)
+except Exception:
+    resource = None
+
+def _bump_open_files_limit(min_soft=65536):
+    """Attempt to raise the soft RLIMIT_NOFILE up to min_soft (not above hard)."""
+    if resource is None:
+        print("Warning: 'resource' module not available; cannot adjust open files limit.")
+        return
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        desired_soft = min(max(soft, int(min_soft)), hard if hard != resource.RLIM_INFINITY else max(soft, int(min_soft)))
+        if desired_soft > soft:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (desired_soft, hard))
+            print(f"Adjusted open files soft limit: {soft} -> {desired_soft} (hard={hard})")
+        else:
+            print(f"Open files limits OK (soft={soft}, hard={hard})")
+    except Exception as e:
+        print(f"Warning: Unable to adjust open files limit: {e}")
+
+# Raise file descriptor soft limit early to avoid 'Too many open files'
+_bump_open_files_limit(min_soft=65536)
 
 # Check if JAX-capable GPU is available, otherwise exit
 check_jax_gpu()
@@ -50,11 +74,29 @@ parser.add_argument('--advanced', '-a', type=str, default='./settings_advanced/d
                     help='Path to the advanced.json file with additional design settings. If not provided, default will be used.')
 parser.add_argument('--no-pyrosetta', action='store_true',
                     help='Run without PyRosetta (skips relaxation and PyRosetta-based scoring)')
+parser.add_argument('--verbose', action='store_true',
+                    help='Enable detailed timing/progress logs')
 
 args = parser.parse_args()
 
 # perform checks of input setting files
 settings_path, filters_path, advanced_path = perform_input_check(args)
+
+# Configure standard logging based on --verbose
+logging.basicConfig(
+    level=logging.WARNING,
+    format='%(asctime)s %(levelname)s %(name)s: %(message)s'
+)
+
+# Reduce noise from third-party libraries regardless of verbosity
+for noisy_logger in (
+    "jax", "jaxlib", "jax._src", "absl", "flax", "colabdesign", "tensorflow", "xla"):
+    logging.getLogger(noisy_logger).setLevel(logging.WARNING)
+
+# Enable detailed logs only for our modules when --verbose is set
+if args.verbose:
+    logging.getLogger("functions").setLevel(logging.DEBUG)
+    logging.getLogger("bindcraft").setLevel(logging.DEBUG)
 
 ### load settings from JSON
 target_settings, advanced_settings, filters = load_json_settings(settings_path, filters_path, advanced_path)
