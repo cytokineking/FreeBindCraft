@@ -84,9 +84,19 @@ settings_path, filters_path, advanced_path = perform_input_check(args)
 
 # Configure standard logging based on --verbose
 logging.basicConfig(
-    level=(logging.DEBUG if args.verbose else logging.WARNING),
+    level=logging.WARNING,
     format='%(asctime)s %(levelname)s %(name)s: %(message)s'
 )
+
+# Reduce noise from third-party libraries regardless of verbosity
+for noisy_logger in (
+    "jax", "jaxlib", "jax._src", "absl", "flax", "colabdesign", "tensorflow", "xla"):
+    logging.getLogger(noisy_logger).setLevel(logging.WARNING)
+
+# Enable detailed logs only for our modules when --verbose is set
+if args.verbose:
+    logging.getLogger("functions").setLevel(logging.DEBUG)
+    logging.getLogger("bindcraft").setLevel(logging.DEBUG)
 
 ### load settings from JSON
 target_settings, advanced_settings, filters = load_json_settings(settings_path, filters_path, advanced_path)
