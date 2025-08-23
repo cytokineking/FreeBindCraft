@@ -2,6 +2,8 @@
 ################ PyRosetta functions
 ####################################
 ### Import dependencies
+import os
+import time
 from .generic_utils import clean_pdb
 from .biopython_utils import hotspot_residues, biopython_unaligned_rmsd, biopython_align_pdbs
 from . import pr_alternative_utils as alt
@@ -30,9 +32,12 @@ def score_interface(pdb_file, binder_chain="B", use_pyrosetta=True):
     Calculate interface scores using PyRosetta or alternative methods.
     Dispatches to appropriate implementation based on availability.
     """
+    basename = os.path.basename(pdb_file)
+    t0_all = time.time()
     try:
         # Handle PyRosetta-free mode
         if not use_pyrosetta or not PYROSETTA_AVAILABLE:
+            print(f"[Rosetta-Score] PyRosetta disabled/unavailable; delegating to alt scoring for {basename}", flush=True)
             return alt.pr_alternative_score_interface(pdb_file, binder_chain)
     except ImportError as e:
         if "pr_alternative_utils" in str(e):
@@ -40,8 +45,11 @@ def score_interface(pdb_file, binder_chain="B", use_pyrosetta=True):
         raise
         
     # Regular PyRosetta mode
+    print(f"[Rosetta-Score] Initiating PyRosetta scoring for {basename} (binder={binder_chain})", flush=True)
     # load pose
+    t0_pose = time.time()
     pose = pr.pose_from_pdb(pdb_file)
+    print(f"[Rosetta-Score] Loaded pose in {time.time()-t0_pose:.2f}s", flush=True)
 
     # analyze interface statistics
     iam = InterfaceAnalyzerMover()
@@ -54,12 +62,15 @@ def score_interface(pdb_file, binder_chain="B", use_pyrosetta=True):
     iam.set_calc_hbond_sasaE(True)
     iam.set_compute_interface_sc(True)
     iam.set_pack_separated(True)
+    t0_iam = time.time()
     iam.apply(pose)
+    print(f"[Rosetta-Score] InterfaceAnalyzerMover applied in {time.time()-t0_iam:.2f}s", flush=True)
 
     # Initialize dictionary with all amino acids
     interface_AA = {aa: 0 for aa in 'ACDEFGHIKLMNPQRSTVWY'}
 
     # Initialize list to store PDB residue IDs at the interface
+    t0_if = time.time()
     interface_residues_set = hotspot_residues(pdb_file, binder_chain)
     interface_residues_pdb_ids = []
     
@@ -70,6 +81,7 @@ def score_interface(pdb_file, binder_chain="B", use_pyrosetta=True):
 
         # Append the binder_chain and the PDB residue number to the list
         interface_residues_pdb_ids.append(f"{binder_chain}{pdb_res_num}")
+    print(f"[Rosetta-Score] Found {len(interface_residues_pdb_ids)} interface residues in {time.time()-t0_if:.2f}s", flush=True)
 
     # count interface residues
     interface_nres = len(interface_residues_pdb_ids)
@@ -105,15 +117,19 @@ def score_interface(pdb_file, binder_chain="B", use_pyrosetta=True):
 
     # calculate binder energy score
     chain_design = ChainSelector(binder_chain)
+    t0_energy = time.time()
     tem = pr.rosetta.core.simple_metrics.metrics.TotalEnergyMetric()
     tem.set_scorefunction(scorefxn)
     tem.set_residue_selector(chain_design)
     binder_score = tem.calculate(pose)
+    print(f"[Rosetta-Score] TotalEnergyMetric calculated in {time.time()-t0_energy:.2f}s", flush=True)
 
     # calculate binder SASA fraction
+    t0_sasa = time.time()
     bsasa = pr.rosetta.core.simple_metrics.metrics.SasaMetric()
     bsasa.set_residue_selector(chain_design)
     binder_sasa = bsasa.calculate(pose)
+    print(f"[Rosetta-Score] SasaMetric calculated in {time.time()-t0_sasa:.2f}s", flush=True)
 
     if binder_sasa > 0:
         interface_binder_fraction = (interface_dSASA / binder_sasa) * 100
@@ -123,9 +139,11 @@ def score_interface(pdb_file, binder_chain="B", use_pyrosetta=True):
     # calculate surface hydrophobicity
     binder_pose = {pose.pdb_info().chain(pose.conformation().chain_begin(i)): p for i, p in zip(range(1, pose.num_chains()+1), pose.split_by_chain())}[binder_chain]
 
+    t0_layer = time.time()
     layer_sel = pr.rosetta.core.select.residue_selector.LayerSelector()
     layer_sel.set_layers(pick_core = False, pick_boundary = False, pick_surface = True)
     surface_res = layer_sel.apply(binder_pose)
+    print(f"[Rosetta-Score] Surface layer selection in {time.time()-t0_layer:.2f}s", flush=True)
 
     exp_apol_count = 0
     total_count = 0 
@@ -163,6 +181,7 @@ def score_interface(pdb_file, binder_chain="B", use_pyrosetta=True):
     # round to two decimal places
     interface_scores = {k: round(v, 2) if isinstance(v, float) else v for k, v in interface_scores.items()}
 
+    print(f"[Rosetta-Score] Completed PyRosetta scoring for {basename} in {time.time()-t0_all:.2f}s", flush=True)
     return interface_scores, interface_AA, interface_residues_pdb_ids_str
 
 def align_pdbs(reference_pdb, align_pdb, reference_chain_id, align_chain_id, use_pyrosetta=True):
@@ -174,6 +193,9 @@ def align_pdbs(reference_pdb, align_pdb, reference_chain_id, align_chain_id, use
         return
         
     # initiate poses
+    t0 = time.time()
+    basename = os.path.basename(align_pdb)
+    print(f"[Rosetta-Align] Initiating alignment for {basename} (ref_chain={reference_chain_id}, align_chain={align_chain_id})", flush=True)
     reference_pose = pr.pose_from_pdb(reference_pdb)
     align_pose = pr.pose_from_pdb(align_pdb)
 
@@ -191,10 +213,13 @@ def align_pdbs(reference_pdb, align_pdb, reference_chain_id, align_chain_id, use
     align.source_chain(align_chain)
     align.target_chain(reference_chain)
     align.apply(align_pose)
+    print(f"[Rosetta-Align] Applied alignment in {time.time()-t0:.2f}s", flush=True)
 
     # Overwrite aligned pdb
+    t1 = time.time()
     align_pose.dump_pdb(align_pdb)
     clean_pdb(align_pdb)
+    print(f"[Rosetta-Align] Saved and cleaned aligned PDB in {time.time()-t1:.2f}s", flush=True)
 
 def unaligned_rmsd(reference_pdb, align_pdb, reference_chain_id, align_chain_id, use_pyrosetta=True):
     """
@@ -203,6 +228,9 @@ def unaligned_rmsd(reference_pdb, align_pdb, reference_chain_id, align_chain_id,
     if not use_pyrosetta or not PYROSETTA_AVAILABLE:
         return biopython_unaligned_rmsd(reference_pdb, align_pdb, reference_chain_id, align_chain_id)
         
+    t0 = time.time()
+    basename = os.path.basename(align_pdb)
+    print(f"[Rosetta-RMSD] Initiating unaligned RMSD for {basename} (ref_chain={reference_chain_id}, align_chain={align_chain_id})", flush=True)
     reference_pose = pr.pose_from_pdb(reference_pdb)
     align_pose = pr.pose_from_pdb(align_pdb)
 
@@ -230,6 +258,7 @@ def unaligned_rmsd(reference_pdb, align_pdb, reference_chain_id, align_chain_id,
     rmsd_metric = RMSDMetric()
     rmsd_metric.set_comparison_pose(reference_chain_pose)
     rmsd = rmsd_metric.calculate(align_chain_pose)
+    print(f"[Rosetta-RMSD] Computed RMSD={rmsd:.2f} in {time.time()-t0:.2f}s", flush=True)
 
     return round(rmsd, 2)
 
@@ -238,6 +267,9 @@ def pr_relax(pdb_file, relaxed_pdb_path, use_pyrosetta=True):
     Relax PDB structure using PyRosetta FastRelax or OpenMM.
     """
     if use_pyrosetta and PYROSETTA_AVAILABLE:
+        basename = os.path.basename(pdb_file)
+        print(f"[Rosetta-Relax] Initiating FastRelax for {basename}", flush=True)
+        t0_all = time.time()
         pose = pr.pose_from_pdb(pdb_file)
         start_pose = pose.clone()
 
@@ -255,27 +287,37 @@ def pr_relax(pdb_file, relaxed_pdb_path, use_pyrosetta=True):
         fastrelax.max_iter(200) # default iterations is 2500
         fastrelax.min_type("lbfgs_armijo_nonmonotone")
         fastrelax.constrain_relax_to_start_coords(True)
+        t0_relax = time.time()
         fastrelax.apply(pose)
+        print(f"[Rosetta-Relax] FastRelax applied in {time.time()-t0_relax:.2f}s", flush=True)
 
         # Align relaxed structure to original trajectory
         align = AlignChainMover()
         align.source_chain(0)
         align.target_chain(0)
         align.pose(start_pose)
+        t0_align = time.time()
         align.apply(pose)
+        print(f"[Rosetta-Relax] Post-relax alignment applied in {time.time()-t0_align:.2f}s", flush=True)
 
         # Copy B factors from start_pose to pose
+        t0_bfac = time.time()
         for resid in range(1, pose.total_residue() + 1):
             if pose.residue(resid).is_protein():
                 # Get the B factor of the first heavy atom in the residue
                 bfactor = start_pose.pdb_info().bfactor(resid, 1)
                 for atom_id in range(1, pose.residue(resid).natoms() + 1):
                     pose.pdb_info().bfactor(resid, atom_id, bfactor)
+        print(f"[Rosetta-Relax] B-factor transfer in {time.time()-t0_bfac:.2f}s", flush=True)
 
         # output relaxed and aligned PDB
+        t0_save = time.time()
         pose.dump_pdb(relaxed_pdb_path)
         clean_pdb(relaxed_pdb_path)
+        print(f"[Rosetta-Relax] Saved and cleaned relaxed PDB in {time.time()-t0_save:.2f}s", flush=True)
+        print(f"[Rosetta-Relax] Completed FastRelax for {basename} in {time.time()-t0_all:.2f}s", flush=True)
     else:
+        print(f"[Rosetta-Relax] PyRosetta disabled/unavailable; delegating to OpenMM relax", flush=True)
         openmm_gpu = True # Default to True for GPU usage in OpenMM fallback
         alt.openmm_relax(pdb_file, relaxed_pdb_path, use_gpu_relax=openmm_gpu)
         
