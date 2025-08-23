@@ -320,5 +320,6 @@ def pr_relax(pdb_file, relaxed_pdb_path, use_pyrosetta=True):
     else:
         vprint(f"[Rosetta-Relax] PyRosetta disabled/unavailable; delegating to OpenMM relax")
         openmm_gpu = True # Default to True for GPU usage in OpenMM fallback
-        alt.openmm_relax(pdb_file, relaxed_pdb_path, use_gpu_relax=openmm_gpu)
+        # Run OpenMM relax in a fresh subprocess to fully reset OpenCL context per run
+        alt.openmm_relax_subprocess(pdb_file, relaxed_pdb_path, use_gpu_relax=openmm_gpu)
         
