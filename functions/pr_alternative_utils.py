@@ -58,6 +58,27 @@ def _get_openmm_forcefield():
         _OPENMM_FORCEFIELD_SINGLETON = app.ForceField('amber14-all.xml', 'implicit/obc2.xml')
     return _OPENMM_FORCEFIELD_SINGLETON
 
+def _reset_opencl_on_failure(simulation=None):
+    """Best-effort OpenCL reset between retries: free AF/JAX VRAM, drop OpenMM Context, GC."""
+    try:
+        try:
+            from colabdesign import clear_mem as _cd_clear_mem  # type: ignore
+            _cd_clear_mem()
+        except Exception:
+            pass
+        try:
+            if simulation is not None:
+                # Touch context to ensure it exists, then drop reference
+                try:
+                    _ = simulation.context.getPlatform()
+                except Exception:
+                    pass
+                del simulation
+        except Exception:
+            pass
+    finally:
+        gc.collect()
+
 # Helper function for k conversion
 def _k_kj_per_nm2(k_kcal_A2):
     return k_kcal_A2 * 4.184 * 100.0
@@ -652,6 +673,8 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
 
             # Retry up to 3 times per platform with 1s backoff
             for attempt_idx in range(1, 4):
+                # ensure fresh simulation object per attempt
+                simulation = None
                 current_platform_obj = None
                 current_properties = {}
                 try:
@@ -670,7 +693,8 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                 except (OpenMMException, Exception) as e:
                     last_exception = e
                     if attempt_idx < 3:
-                        vprint(f"[OpenMM-Relax] Platform {p_name_to_try} attempt {attempt_idx} failed; retrying in 1s...")
+                        vprint(f"[OpenMM-Relax] Platform {p_name_to_try} attempt {attempt_idx} failed; resetting OpenCL and retrying in 1s...")
+                        _reset_opencl_on_failure(simulation)
                         time.sleep(1.0)
                         continue
                     else:
