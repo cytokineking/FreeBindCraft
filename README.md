@@ -1,5 +1,9 @@
 # BindCraft (v1.52) with Optional PyRosetta Bypass
 
+<p align="center">
+  <img src="./free-bindcraft.png" alt="BindCraft" width="720" />
+</p>
+
 This repository contains a modified version of Martin Pacesa's BindCraft (v1.52). The primary change is the introduction of an **optional PyRosetta bypass mechanism**.
 
 For comprehensive details on the original BindCraft pipeline, features, advanced settings, and filter explanations, please refer to the **original BindCraft repository: [https://github.com/martinpacesa/BindCraft](https://github.com/martinpacesa/BindCraft)** and the [original preprint](https://www.biorxiv.org/content/10.1101/2024.09.30.615802). This fork is hosted at: [https://github.com/cytokineking/BindCraft-PyRosetta-Optional](https://github.com/cytokineking/BindCraft-PyRosetta-Optional).
@@ -13,12 +17,7 @@ The `--no-pyrosetta` flag, usable during both installation and runtime, enables 
 *   **SASA Calculations:** Surface area and derived metrics are computed using [FreeSASA](https://github.com/mittinatten/freesasa) (if installed) or a Biopython Shrake–Rupley fallback. These values align closely with the PyRosetta-derived values.
 *   **Interface Residues and Alignment:** Uses Biopython-based routines for interface residue identification, RMSD, and PDB alignment.
 
-This bypass is intended for situations where:
-*   PyRosetta licensing or installation poses a challenge.
-*   Speed is prioritized over detailed Rosetta-based structural metrics.
-*   A reduced dependency footprint is desired.
-
-**Important Note:** Rosetta-specific metrics that lack open-source equivalents (e.g., certain energy decompositions) are not computed; placeholder values are used where needed for compatibility with default filters. Evaluate design quality accordingly.
+**Important Note:** Rosetta-specific metrics that lack open-source equivalents are not computed; placeholder values are used where needed for compatibility with default filters. Evaluate design quality accordingly.
 
 ## Installation
 
@@ -31,9 +30,9 @@ This bypass is intended for situations where:
     Installation script options:
     *   `--cuda CUDAVERSION`: Specify your CUDA version (e.g., '12.4').
     *   `--pkg_manager MANAGER`: Specify 'mamba' or 'conda' (default: 'conda').
-    *   `--no-pyrosetta`: **Use this flag to install without PyRosetta dependencies and enable the bypass mode features.**
+    *   `--no-pyrosetta`: **Use this flag to install without PyRosetta.**
 
-    **Example: PyRosetta-Free Installation (Recommended for bypass)**
+    **Example: PyRosetta-Free Installation**
     ```bash
     bash install_bindcraft.sh --cuda '12.4' --pkg_manager 'conda' --no-pyrosetta
     ```
