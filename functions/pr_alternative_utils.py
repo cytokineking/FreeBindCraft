@@ -28,7 +28,7 @@ import contextlib
 import time
 from itertools import zip_longest
 from .generic_utils import clean_pdb
-from .logging_utils import vprint, is_verbose
+from .logging_utils import vprint
 from .biopython_utils import hotspot_residues, biopython_align_all_ca
 
 # OpenMM imports
