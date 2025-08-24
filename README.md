@@ -1,12 +1,12 @@
-# BindCraft (v1.52) with Optional PyRosetta Bypass
+# FreeBindCraft (v1.52) with Optional PyRosetta Bypass
 
 <p align="center">
-  <img src="./free-bindcraft.png" alt="BindCraft" width="720" />
+  <img src="./free-bindcraft.png" alt="FreeBindCraft" width="720" />
 </p>
 
 This repository contains a modified version of Martin Pacesa's BindCraft (v1.52). The primary change is the introduction of an **optional PyRosetta bypass mechanism**.
 
-For comprehensive details on the original BindCraft pipeline, features, advanced settings, and filter explanations, please refer to the **original BindCraft repository: [https://github.com/martinpacesa/BindCraft](https://github.com/martinpacesa/BindCraft)** and the [original preprint](https://www.biorxiv.org/content/10.1101/2024.09.30.615802). This fork is hosted at: [https://github.com/cytokineking/BindCraft-PyRosetta-Optional](https://github.com/cytokineking/BindCraft-PyRosetta-Optional).
+For comprehensive details on the original BindCraft pipeline, features, advanced settings, and filter explanations, please refer to the **original BindCraft repository: [https://github.com/martinpacesa/BindCraft](https://github.com/martinpacesa/BindCraft)** and the [original preprint](https://www.biorxiv.org/content/10.1101/2024.09.30.615802). This fork is hosted at: [https://github.com/cytokineking/FreeBindCraft](https://github.com/cytokineking/FreeBindCraft).
 
 ## Key Modification: PyRosetta Bypass Functionality
 
@@ -23,7 +23,7 @@ The `--no-pyrosetta` flag, usable during both installation and runtime, enables 
 
 1.  Clone this modified repository:
     ```bash
-    git clone https://github.com/cytokineking/BindCraft-PyRosetta-Optional [install_folder]
+    git clone https://github.com/cytokineking/FreeBindCraft [install_folder]
     ```
 2.  Navigate into your install folder (`cd [install_folder]`) and run the installation script. A CUDA-compatible Nvidia graphics card is required.
 
