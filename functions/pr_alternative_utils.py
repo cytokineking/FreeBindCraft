@@ -1020,23 +1020,25 @@ def pr_alternative_score_interface(pdb_file, binder_chain="B", sasa_engine="auto
 
 def openmm_relax_subprocess(pdb_file_path, output_pdb_path, use_gpu_relax=True, timeout=None):
     """Run openmm_relax in a fresh Python process to fully reset OpenCL context per run.
-    Streams child logs to parent stdout/stderr so DEBUG lines are visible.
+    Streams child logs to parent stdout/stderr so DEBUG lines are visible, without runpy warnings.
     """
     import logging as _logging
     want_verbose = _logging.getLogger("functions").isEnabledFor(_logging.DEBUG)
-    cmd = [
-        sys.executable,
-        "-m", "functions.pr_alternative_utils",
-        "--relax-cli",
-        "--in", str(pdb_file_path),
-        "--out", str(output_pdb_path),
-    ]
-    if use_gpu_relax:
-        cmd.append("--gpu")
+    code_parts = []
     if want_verbose:
-        cmd.append("--verbose")
+        code_parts.append(
+            "import logging; logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(levelname)s %(name)s: %(message)s')"
+        )
+    else:
+        code_parts.append("import logging; logging.basicConfig(level=logging.WARNING)")
+    code_parts.append("from functions.pr_alternative_utils import openmm_relax")
+    code_parts.append(
+        f"plat = openmm_relax({pdb_file_path!r}, {output_pdb_path!r}, use_gpu_relax={bool(use_gpu_relax)})"
+    )
+    code_parts.append("print(plat or '')")
+    py_code = "; ".join(code_parts)
     # Do not capture output: let child logging print directly
-    proc = subprocess.run(cmd, timeout=timeout)
+    proc = subprocess.run([sys.executable, "-c", py_code], timeout=timeout)
     if proc.returncode != 0:
         raise RuntimeError(f"Subprocess openmm_relax failed with rc={proc.returncode}")
     return None
