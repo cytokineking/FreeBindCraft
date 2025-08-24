@@ -1019,7 +1019,11 @@ def pr_alternative_score_interface(pdb_file, binder_chain="B", sasa_engine="auto
 
 
 def openmm_relax_subprocess(pdb_file_path, output_pdb_path, use_gpu_relax=True, timeout=None):
-    """Run openmm_relax in a fresh Python process to fully reset OpenCL context per run."""
+    """Run openmm_relax in a fresh Python process to fully reset OpenCL context per run.
+    Streams child logs to parent stdout/stderr so DEBUG lines are visible.
+    """
+    import logging as _logging
+    want_verbose = _logging.getLogger("functions").isEnabledFor(_logging.DEBUG)
     cmd = [
         sys.executable,
         "-m", "functions.pr_alternative_utils",
@@ -1029,11 +1033,13 @@ def openmm_relax_subprocess(pdb_file_path, output_pdb_path, use_gpu_relax=True, 
     ]
     if use_gpu_relax:
         cmd.append("--gpu")
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if want_verbose:
+        cmd.append("--verbose")
+    # Do not capture output: let child logging print directly
+    proc = subprocess.run(cmd, timeout=timeout)
     if proc.returncode != 0:
-        raise RuntimeError(f"Subprocess openmm_relax failed: rc={proc.returncode}, stderr={proc.stderr}")
-    # Best-effort to surface platform info from stdout
-    return (proc.stdout or "").strip() or None
+        raise RuntimeError(f"Subprocess openmm_relax failed with rc={proc.returncode}")
+    return None
 
 
 if __name__ == "__main__":
@@ -1043,8 +1049,15 @@ if __name__ == "__main__":
     parser.add_argument("--in", dest="inp", type=str)
     parser.add_argument("--out", dest="out", type=str)
     parser.add_argument("--gpu", action="store_true", default=False)
+    parser.add_argument("--verbose", action="store_true", default=False)
     args = parser.parse_args()
     if args.relax_cli:
+        if args.verbose:
+            import logging
+            logging.basicConfig(
+                level=logging.DEBUG,
+                format='%(asctime)s %(levelname)s %(name)s: %(message)s'
+            )
         plat = openmm_relax(args.inp, args.out, use_gpu_relax=args.gpu)
         if plat:
             print(plat)
