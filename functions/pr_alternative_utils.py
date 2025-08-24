@@ -1031,6 +1031,13 @@ def openmm_relax_subprocess(pdb_file_path, output_pdb_path, use_gpu_relax=True, 
         )
     else:
         code_parts.append("import logging; logging.basicConfig(level=logging.WARNING)")
+    # Suppress noisy third-party DEBUG logs in child process
+    code_parts.append("import logging")
+    code_parts.append("logging.getLogger('matplotlib').setLevel(logging.WARNING)")
+    code_parts.append("logging.getLogger('matplotlib.font_manager').setLevel(logging.WARNING)")
+    code_parts.append("logging.getLogger('pyrosetta').setLevel(logging.WARNING)")
+    code_parts.append("logging.getLogger('pyrosetta.distributed').setLevel(logging.WARNING)")
+    code_parts.append("logging.getLogger('pyrosetta.distributed.utility.pickle').setLevel(logging.WARNING)")
     code_parts.append("from functions.pr_alternative_utils import openmm_relax")
     code_parts.append(
         f"plat = openmm_relax({pdb_file_path!r}, {output_pdb_path!r}, use_gpu_relax={bool(use_gpu_relax)})"

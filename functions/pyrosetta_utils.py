@@ -38,7 +38,6 @@ def score_interface(pdb_file, binder_chain="B", use_pyrosetta=True):
     try:
         # Handle PyRosetta-free mode
         if not use_pyrosetta or not PYROSETTA_AVAILABLE:
-            vprint(f"[Rosetta-Score] PyRosetta disabled/unavailable; delegating to alt scoring for {basename}")
             return alt.pr_alternative_score_interface(pdb_file, binder_chain)
     except ImportError as e:
         if "pr_alternative_utils" in str(e):
@@ -318,7 +317,7 @@ def pr_relax(pdb_file, relaxed_pdb_path, use_pyrosetta=True):
         vprint(f"[Rosetta-Relax] Saved and cleaned relaxed PDB in {time.time()-t0_save:.2f}s")
         vprint(f"[Rosetta-Relax] Completed FastRelax for {basename} in {time.time()-t0_all:.2f}s")
     else:
-        vprint(f"[Rosetta-Relax] PyRosetta disabled/unavailable; delegating to OpenMM relax")
+        # Quiet: direct OpenMM fallback without extra banner
         openmm_gpu = True # Default to True for GPU usage in OpenMM fallback
         # Run OpenMM relax in a fresh subprocess to fully reset OpenCL context per run
         alt.openmm_relax_subprocess(pdb_file, relaxed_pdb_path, use_gpu_relax=openmm_gpu)
