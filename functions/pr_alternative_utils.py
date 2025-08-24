@@ -1018,12 +1018,14 @@ def pr_alternative_score_interface(pdb_file, binder_chain="B", sasa_engine="auto
     return interface_scores, interface_AA, interface_residues_pdb_ids_str
 
 
-def openmm_relax_subprocess(pdb_file_path, output_pdb_path, use_gpu_relax=True, timeout=None):
+def openmm_relax_subprocess(pdb_file_path, output_pdb_path, use_gpu_relax=True, timeout=None, max_attempts=3):
     """Run openmm_relax in a fresh Python process to fully reset OpenCL context per run.
-    Streams child logs to parent stdout/stderr so DEBUG lines are visible, without runpy warnings.
+    Retries if the child fell back to copying input (soft failure) or if the child crashes (hard failure).
+    Streams child logs to parent stdout/stderr so DEBUG lines are visible.
     """
     import logging as _logging
     want_verbose = _logging.getLogger("functions").isEnabledFor(_logging.DEBUG)
+
     code_parts = []
     if want_verbose:
         code_parts.append(
@@ -1044,10 +1046,48 @@ def openmm_relax_subprocess(pdb_file_path, output_pdb_path, use_gpu_relax=True, 
     )
     code_parts.append("print(plat or '')")
     py_code = "; ".join(code_parts)
-    # Do not capture output: let child logging print directly
-    proc = subprocess.run([sys.executable, "-c", py_code], timeout=timeout)
-    if proc.returncode != 0:
-        raise RuntimeError(f"Subprocess openmm_relax failed with rc={proc.returncode}")
+
+    # Signature to detect soft fallback path inside child (input copied to output)
+    fallback_signature = "[OpenMM-Relax] ERROR; copied input to output"
+
+    attempts = int(max(1, int(max_attempts)))
+    for attempt_idx in range(1, attempts + 1):
+        # Capture output to inspect for fallback while still forwarding to parent
+        proc = subprocess.run(
+            [sys.executable, "-c", py_code], timeout=timeout, capture_output=True, text=True
+        )
+
+        # Forward child output to parent streams to preserve visibility
+        if proc.stdout:
+            try:
+                sys.stdout.write(proc.stdout)
+            except Exception:
+                pass
+        if proc.stderr:
+            try:
+                sys.stderr.write(proc.stderr)
+            except Exception:
+                pass
+
+        # Hard failure: non-zero rc from child
+        if proc.returncode != 0:
+            if attempt_idx >= attempts:
+                raise RuntimeError(
+                    f"Subprocess openmm_relax failed with rc={proc.returncode} after {attempt_idx} attempts"
+                )
+            time.sleep(0.5)
+            continue
+
+        # Soft failure: child printed fallback copy message
+        combined_out = (proc.stdout or "") + (proc.stderr or "")
+        if fallback_signature in combined_out and attempt_idx < attempts:
+            print(f"[OpenMM-Relax] Detected fallback copy; retrying ({attempt_idx+1}/{attempts})")
+            time.sleep(0.5)
+            continue
+
+        # Success (or final acceptable fallback)
+        return None
+
     return None
 
 
