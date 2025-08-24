@@ -1,4 +1,4 @@
-# FreeBindCraft (v1.52) with Optional PyRosetta Bypass
+# FreeBindCraft: BindCraft (v1.52) with Optional PyRosetta Bypass
 
 <p align="center">
   <img src="./free-bindcraft.png" alt="FreeBindCraft" width="720" />
