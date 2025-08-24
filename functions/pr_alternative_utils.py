@@ -8,6 +8,7 @@ replication is not possible.
 
 Functions:
     openmm_relax: Structure relaxation using OpenMM
+    openmm_relax_subprocess: Run relax in a fresh process to isolate OpenCL context
     pr_alternative_score_interface: Interface scoring using Biopython
     
 Helper Functions:
@@ -15,9 +16,15 @@ Helper Functions:
     _create_lj_repulsive_force: Custom LJ repulsion for clash resolution
     _create_backbone_restraint_force: Backbone position restraints
     _chain_total_sasa: Calculate total SASA for a chain
+
+Rationale:
+    In long runs we observed sporadic OpenCL context failures after many relax calls,
+    consistent with driver/runtime state or memory accumulation. The subprocess helper
+    guarantees full teardown per relax, isolating OpenCL state between runs.
 """
 
 import gc
+import sys
 import shutil
 import copy
 import os
@@ -58,26 +65,7 @@ def _get_openmm_forcefield():
         _OPENMM_FORCEFIELD_SINGLETON = app.ForceField('amber14-all.xml', 'implicit/obc2.xml')
     return _OPENMM_FORCEFIELD_SINGLETON
 
-def _reset_opencl_on_failure(simulation=None):
-    """Best-effort OpenCL reset between retries: free AF/JAX VRAM, drop OpenMM Context, GC."""
-    try:
-        try:
-            from colabdesign import clear_mem as _cd_clear_mem  # type: ignore
-            _cd_clear_mem()
-        except Exception:
-            pass
-        try:
-            if simulation is not None:
-                # Touch context to ensure it exists, then drop reference
-                try:
-                    _ = simulation.context.getPlatform()
-                except Exception:
-                    pass
-                del simulation
-        except Exception:
-            pass
-    finally:
-        gc.collect()
+# Removed legacy in-process OpenCL reset helper; subprocess isolation handles context teardown.
 
 # Helper function for k conversion
 def _k_kj_per_nm2(k_kcal_A2):
@@ -693,8 +681,7 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                 except (OpenMMException, Exception) as e:
                     last_exception = e
                     if attempt_idx < 3:
-                        vprint(f"[OpenMM-Relax] Platform {p_name_to_try} attempt {attempt_idx} failed; resetting OpenCL and retrying in 1s...")
-                        _reset_opencl_on_failure(simulation)
+                        vprint(f"[OpenMM-Relax] Platform {p_name_to_try} attempt {attempt_idx} failed; retrying in 1s...")
                         time.sleep(1.0)
                         continue
                     else:
@@ -1029,3 +1016,58 @@ def pr_alternative_score_interface(pdb_file, binder_chain="B", sasa_engine="auto
 
     vprint(f"[Alt-Score] Completed scoring for {basename} in {time.time()-t0_all:.2f}s")
     return interface_scores, interface_AA, interface_residues_pdb_ids_str
+
+
+def openmm_relax_subprocess(pdb_file_path, output_pdb_path, use_gpu_relax=True, timeout=None):
+    """Run openmm_relax in a fresh Python process to fully reset OpenCL context per run.
+    Streams child logs to parent stdout/stderr so DEBUG lines are visible, without runpy warnings.
+    """
+    import logging as _logging
+    want_verbose = _logging.getLogger("functions").isEnabledFor(_logging.DEBUG)
+    code_parts = []
+    if want_verbose:
+        code_parts.append(
+            "import logging; logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(levelname)s %(name)s: %(message)s')"
+        )
+    else:
+        code_parts.append("import logging; logging.basicConfig(level=logging.WARNING)")
+    # Suppress noisy third-party DEBUG logs in child process
+    code_parts.append("import logging")
+    code_parts.append("logging.getLogger('matplotlib').setLevel(logging.WARNING)")
+    code_parts.append("logging.getLogger('matplotlib.font_manager').setLevel(logging.WARNING)")
+    code_parts.append("logging.getLogger('pyrosetta').setLevel(logging.WARNING)")
+    code_parts.append("logging.getLogger('pyrosetta.distributed').setLevel(logging.WARNING)")
+    code_parts.append("logging.getLogger('pyrosetta.distributed.utility.pickle').setLevel(logging.WARNING)")
+    code_parts.append("from functions.pr_alternative_utils import openmm_relax")
+    code_parts.append(
+        f"plat = openmm_relax({pdb_file_path!r}, {output_pdb_path!r}, use_gpu_relax={bool(use_gpu_relax)})"
+    )
+    code_parts.append("print(plat or '')")
+    py_code = "; ".join(code_parts)
+    # Do not capture output: let child logging print directly
+    proc = subprocess.run([sys.executable, "-c", py_code], timeout=timeout)
+    if proc.returncode != 0:
+        raise RuntimeError(f"Subprocess openmm_relax failed with rc={proc.returncode}")
+    return None
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--relax-cli", action="store_true")
+    parser.add_argument("--in", dest="inp", type=str)
+    parser.add_argument("--out", dest="out", type=str)
+    parser.add_argument("--gpu", action="store_true", default=False)
+    parser.add_argument("--verbose", action="store_true", default=False)
+    args = parser.parse_args()
+    if args.relax_cli:
+        if args.verbose:
+            import logging
+            logging.basicConfig(
+                level=logging.DEBUG,
+                format='%(asctime)s %(levelname)s %(name)s: %(message)s'
+            )
+        plat = openmm_relax(args.inp, args.out, use_gpu_relax=args.gpu)
+        if plat:
+            print(plat)
+        sys.exit(0)
