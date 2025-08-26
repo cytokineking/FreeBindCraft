@@ -238,11 +238,11 @@ def binder_hallucination(design_name, starting_pdb, chain, target_hotspot_residu
 
     ### get the sampled sequence for plotting
     af_model.get_seqs()
-    if advanced_settings["save_design_trajectory_plots"]:
+    if advanced_settings.get("save_design_trajectory_plots", True):
         plot_trajectory(af_model, design_name, design_paths)
 
     ### save the hallucination trajectory animation
-    if advanced_settings["save_design_animations"]:
+    if advanced_settings.get("save_design_animations", True):
         plots = af_model.animate(dpi=150)
         with open(os.path.join(design_paths["Trajectory/Animation"], design_name+".html"), 'w') as f:
             f.write(plots)

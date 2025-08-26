@@ -19,6 +19,12 @@ The `--no-pyrosetta` flag, usable during both installation and runtime, enables 
 
 **Important Note:** Rosetta-specific metrics that lack open-source equivalents are not computed; placeholder values are used where needed for compatibility with default filters. Evaluate design quality accordingly.
 
+### Technical Overview & Rationale
+
+For the motivation behind the PyRosetta bypass, implementation details (OpenMM relax, FreeSASA/Biopython SASA, `sc-rs` shape complementarity), and empirical impact on filter decisions, see the in-depth technical overview:
+
+- `extras/FreeBindCraft_Technical_Overview.md`
+
 ## Installation
 
 1.  Clone this modified repository:
@@ -68,6 +74,23 @@ python -u ./bindcraft.py --settings './settings_target/your_target.json' --filte
 **Note:** Even if you installed BindCraft *with* PyRosetta, you can still run in bypass mode by adding the `--no-pyrosetta` flag at runtime.
 
 For details on configuring target settings (`--settings`), filters (`--filters`), advanced parameters (`--advanced`), and other operational aspects of BindCraft, please consult the documentation in the [original BindCraft repository](https://github.com/martinpacesa/BindCraft).
+
+## Additional New CLI Flags 
+
+You can further control runtime behavior with these flags:
+
+- `--verbose`: Enable detailed timing/progress logs for BindCraft internals.
+- `--no-plots`: Disable saving design trajectory plots (overrides advanced settings).
+- `--no-animations`: Disable saving trajectory animations (overrides advanced settings).
+
+Example:
+```bash
+python -u ./bindcraft.py \
+  --settings './settings_target/your_target.json' \
+  --filters './settings_filters/default_filters.json' \
+  --advanced './settings_advanced/default_4stage_multimer.json' \
+  --no-animations --no-plots --verbose
+```
 
 ## Citations & External Tools
 

@@ -264,6 +264,12 @@ def perform_advanced_settings_check(advanced_settings, bindcraft_folder):
     elif isinstance(advanced_settings["omit_AAs"], str):
         advanced_settings["omit_AAs"] = advanced_settings["omit_AAs"].strip()
 
+    # Ensure default toggles for plots/animations if missing
+    if "save_design_trajectory_plots" not in advanced_settings:
+        advanced_settings["save_design_trajectory_plots"] = True
+    if "save_design_animations" not in advanced_settings:
+        advanced_settings["save_design_animations"] = True
+
     # Ensure required executables are present and executable (chmod +x if needed)
     _ensure_required_executables(advanced_settings, bindcraft_folder)
 

@@ -76,6 +76,10 @@ parser.add_argument('--no-pyrosetta', action='store_true',
                     help='Run without PyRosetta (skips relaxation and PyRosetta-based scoring)')
 parser.add_argument('--verbose', action='store_true',
                     help='Enable detailed timing/progress logs')
+parser.add_argument('--no-plots', action='store_true',
+                    help='Disable saving design trajectory plots (overrides advanced settings)')
+parser.add_argument('--no-animations', action='store_true',
+                    help='Disable saving design animations (overrides advanced settings)')
 
 args = parser.parse_args()
 
@@ -111,6 +115,12 @@ design_models, prediction_models, multimer_validation = load_af2_models(advanced
 ### perform checks on advanced_settings
 bindcraft_folder = os.path.dirname(os.path.realpath(__file__))
 advanced_settings = perform_advanced_settings_check(advanced_settings, bindcraft_folder)
+
+# CLI overrides for plots/animations
+if args.no_plots:
+    advanced_settings["save_design_trajectory_plots"] = False
+if args.no_animations:
+    advanced_settings["save_design_animations"] = False
 
 ### generate directories, design path names can be found within the function
 design_paths = generate_directories(target_settings["design_path"])
