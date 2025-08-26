@@ -877,6 +877,7 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         shutil.copy(pdb_file_path, output_pdb_path)
         gc.collect()
         elapsed_total = time.time() - start_time
+        print(f"[OpenMM-Relax] ERROR; {_}")
         print(f"[OpenMM-Relax] ERROR; copied input to output for {basename} after {elapsed_total:.2f}s")
         return platform_name_used
 
