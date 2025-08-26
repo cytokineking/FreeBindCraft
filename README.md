@@ -19,6 +19,12 @@ The `--no-pyrosetta` flag, usable during both installation and runtime, enables 
 
 **Important Note:** Rosetta-specific metrics that lack open-source equivalents are not computed; placeholder values are used where needed for compatibility with default filters. Evaluate design quality accordingly.
 
+### Technical Overview & Rationale
+
+For the motivation behind the PyRosetta bypass, implementation details (OpenMM relax, FreeSASA/Biopython SASA, `sc-rs` shape complementarity), and empirical impact on filter decisions, see the in-depth technical overview:
+
+- `extras/FreeBindCraft_Technical_Overview.md`
+
 ## Installation
 
 1.  Clone this modified repository:
