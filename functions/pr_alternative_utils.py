@@ -1082,6 +1082,12 @@ def openmm_relax_subprocess(pdb_file_path, output_pdb_path, use_gpu_relax=True, 
         combined_out = (proc.stdout or "") + (proc.stderr or "")
         if fallback_signature in combined_out and attempt_idx < attempts:
             print(f"[OpenMM-Relax] Detected fallback copy; retrying ({attempt_idx+1}/{attempts})")
+            # Remove fallback-copied file before retry so the next success writes a clean output
+            try:
+                if os.path.isfile(output_pdb_path):
+                    os.remove(output_pdb_path)
+            except Exception:
+                pass
             time.sleep(0.5)
             continue
 
