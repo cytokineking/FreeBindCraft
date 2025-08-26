@@ -75,6 +75,23 @@ python -u ./bindcraft.py --settings './settings_target/your_target.json' --filte
 
 For details on configuring target settings (`--settings`), filters (`--filters`), advanced parameters (`--advanced`), and other operational aspects of BindCraft, please consult the documentation in the [original BindCraft repository](https://github.com/martinpacesa/BindCraft).
 
+## Additional New CLI Flags 
+
+You can further control runtime behavior with these flags:
+
+- `--verbose`: Enable detailed timing/progress logs for BindCraft internals.
+- `--no-plots`: Disable saving design trajectory plots (overrides advanced settings).
+- `--no-animations`: Disable saving trajectory animations (overrides advanced settings).
+
+Example:
+```bash
+python -u ./bindcraft.py \
+  --settings './settings_target/your_target.json' \
+  --filters './settings_filters/default_filters.json' \
+  --advanced './settings_advanced/default_4stage_multimer.json' \
+  --no-animations --no-plots --verbose
+```
+
 ## Citations & External Tools
 
 - Shape Complementarity (SC): `sc-rs` — [https://github.com/cytokineking/sc-rs](https://github.com/cytokineking/sc-rs)
