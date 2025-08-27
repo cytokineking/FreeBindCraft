@@ -36,11 +36,13 @@ Where possible, we validated replacements against PyRosetta-derived values. For 
 
 We analyzed roughly 20,000 trajectories and ~400,000 MPNN sequence variants across runs to quantify which filters determine acceptance. Highlights:
 
-- ~88.7% of MPNN variants fail base AlphaFold metrics and are rejected before any PyRosetta scoring is involved.
-- Structural agreement checks (e.g., hotspot/binder RMSDs): ~1.7% of rejections.
-- Surface hydrophobicity: ~3.9% of rejections.
-- Shape complementarity (SC): ~0.7% of rejections.
-- Hydrogen-bond network quality (mostly “unsatisfied H-bonds”): ~3.2% of rejections.
+- ~88.65% of MPNN variants fail base AlphaFold metrics and are rejected before any PyRosetta scoring is involved.
+- An additional ~1.63% of MPNN variants violate additional AlphaFold metrics, yielding a total of >90% of rejections being driven by AlphaFold metrics alone.
+- Structural agreement checks (e.g., hotspot/binder RMSDs): ~1.66% of rejections.
+- Interface amino acid composition (e.g., excessive Lys or Met residues) accounted for ~0.20 of rejections.
+- Surface hydrophobicity: ~3.89% of rejections.
+- Shape complementarity (SC): ~0.74% of rejections.
+- Hydrogen-bond network quality (mostly “unsatisfied H-bonds”): ~3.23% of rejections.
 - Interface energetic/size thresholds (e.g., dG, dSASA) were negligible drivers (only one observed rejection across these runs).
 
 These observations guided which features we fully re-implemented, approximated, or deprioritized. The analysis workflow is codified in `extras/analyze_bindcraft_rejections.py`, which can be run on one or many result folders to reproduce breakdowns.
@@ -95,6 +97,15 @@ Comparison to original BindCraft (Rosetta layer-based exposure):
 
 Notes: FreeSASA agrees closely with PyRosetta SASA; Biopython values are slightly higher on average. The hydrophobicity definition here is intentionally area-weighted. It correlates with—though is not identical to—the original Rosetta layer-based approach and we consider it more faithful to the physical notion of “hydrophobic surface area”.
 
+<p align="center">
+  <img src="./Biopython-FreeSasa-vs-PyRosetta.png" alt="dSASA: Biopython and FreeSASA vs PyRosetta" width="900" />
+</p>
+<p align="center"><em>dSASA comparisons: Biopython (left) and FreeSASA (right) versus PyRosetta.</em></p>
+
+<p align="center">
+  <img src="./surface-hydrophobicity-comparison.png" alt="Surface hydrophobicity: FreeBindCraft vs PyRosetta" width="700" />
+</p>
+<p align="center"><em>Surface hydrophobicity: area-weighted SASA (FreeBindCraft) vs Rosetta layer‑based exposure.</em></p>
 
 ### Shape complementarity (SC)
 
@@ -105,6 +116,11 @@ File: `functions/pr_alternative_utils.py`
 - Tool: `sc-rs` CLI (MIT license) computes the Lawrence & Colman SC statistic in [0, 1].
 - Integration: looks for a binary next to `functions/` (e.g., `functions/sc`), then environment variables (`SC_RS_BIN`, `SC_BIN`), then `PATH`.
 - Agreement: empirical comparisons show near-identical values to PyRosetta with minor differences likely from radii/surface discretization.
+
+<p align="center">
+  <img src="./scrs-vs-pyrosetta.png" alt="Shape Complementarity: sc-rs vs PyRosetta" width="700" />
+</p>
+<p align="center"><em>Shape complementarity comparison: sc-rs versus PyRosetta.</em></p>
 
 
 ### Interface residues, composition, and structural checks
