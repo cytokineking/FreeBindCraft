@@ -92,6 +92,14 @@ else
     fi
 fi
 
+# Ensure OpenCL ICD loader is present (for OpenMM OpenCL platform)
+echo -e "Installing OpenCL ICD loader (ocl-icd-libopencl1)\n"
+if command -v sudo >/dev/null 2>&1; then
+  sudo apt-get update && sudo apt-get install -y ocl-icd-libopencl1 || echo -e "Warning: Failed to install OpenCL ICD loader via apt"
+else
+  apt-get update && apt-get install -y ocl-icd-libopencl1 || echo -e "Warning: Failed to install OpenCL ICD loader via apt"
+fi
+
 # Define required packages based on installation mode
 if [ "$install_pyrosetta" = true ]; then
     required_packages=(pip pandas libgfortran5 matplotlib numpy biopython scipy pdbfixer openmm seaborn tqdm jupyter ffmpeg pyrosetta fsspec py3dmol chex dm-haiku dm-tree joblib ml-collections immutabledict optax jaxlib jax cuda-nvcc cudnn)

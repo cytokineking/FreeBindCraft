@@ -49,6 +49,66 @@ For the motivation behind the PyRosetta bypass, implementation details (OpenMM r
     bash install_bindcraft.sh --cuda '12.4' --pkg_manager 'conda'
     ```
 
+## Containerized usage (Docker)
+
+You can run FreeBindCraft in a GPU-enabled Docker container as an alternative to the install script.
+
+### Prerequisites (on the host)
+
+- NVIDIA driver installed (check with `nvidia-smi`).
+- Docker CE and NVIDIA Container Toolkit:
+  - Linux (Ubuntu):
+    1) Install Docker CE and restart the daemon.
+    2) `sudo apt-get install -y nvidia-container-toolkit`
+    3) `sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker`
+  - Validate GPU availability inside containers:
+    ```bash
+    docker run --rm --gpus all nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 nvidia-smi
+    ```
+
+### Build the image
+
+```bash
+docker build -t freebindcraft:gpu .
+``
+
+### Quick sanity test (OpenMM relax)
+
+```bash
+mkdir -p ~/bindcraft_out
+docker run --gpus all --rm -it \
+  --ulimit nofile=65536:65536 \
+  -e OPENMM_PLATFORM_ORDER=OpenCL,CPU \
+  -e OPENMM_DEFAULT_PLATFORM=OpenCL \
+  -v ~/bindcraft_out:/work/out \
+  freebindcraft:gpu \
+  python extras/test_openmm_relax.py example/PDL1.pdb /work/out/relax_test
+```
+
+### Run a full BindCraft job (example: `settings_target/PDL1.json`)
+
+`settings_target/PDL1.json` uses `"design_path": "/root/software/pdl1/"`. Mount a host directory there:
+
+```bash
+mkdir -p ~/bindcraft_runs/pdl1
+docker run --gpus all --rm -it \
+  --ulimit nofile=65536:65536 \
+  -e OPENMM_PLATFORM_ORDER=OpenCL,CPU \
+  -e OPENMM_DEFAULT_PLATFORM=OpenCL \
+  -v ~/bindcraft_runs/pdl1:/root/software/pdl1 \
+  freebindcraft:gpu \
+  python bindcraft.py \
+    --settings settings_target/PDL1.json \
+    --filters settings_filters/default_filters.json \
+    --advanced settings_advanced/default_4stage_multimer.json \
+    --no-pyrosetta
+```
+
+### Note on file descriptor limits
+
+- FreeBindCraft opens many files during long runs. You should raise the container file limit via `--ulimit nofile=65536:65536` on `docker run` (shown above).
+- This image also includes an entrypoint that attempts to raise the soft limit inside the container. Passing `--ulimit` ensures the host allows it and is recommended.
+
 ## Running BindCraft
 
 Activate the Conda environment:

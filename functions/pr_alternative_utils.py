@@ -648,8 +648,12 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
 
         platform_order = []
         if use_gpu_relax:
-            # Enforce GPU-only usage: OpenCL only per environment constraints
-            platform_order.extend(['OpenCL'])
+            # Prefer OpenCL, then CUDA (override with env if needed)
+            env_order = os.environ.get('OPENMM_PLATFORM_ORDER')
+            if env_order:
+                platform_order = [p.strip() for p in env_order.split(',') if p.strip()]
+            else:
+                platform_order.extend(['OpenCL', 'CUDA'])
         else:
             # Explicit CPU-only path if GPU is not requested
             platform_order.append('CPU')

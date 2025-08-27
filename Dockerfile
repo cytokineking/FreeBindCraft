@@ -1,6 +1,6 @@
 FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 
-LABEL org.opencontainers.image.source="https://github.com/<owner>/<repo>"
+LABEL org.opencontainers.image.source="https://github.com/cytokineking/FreeBindCraft"
 LABEL org.opencontainers.image.description="FreeBindCraft GPU (no PyRosetta)"
 LABEL org.opencontainers.image.licenses="MIT"
 
