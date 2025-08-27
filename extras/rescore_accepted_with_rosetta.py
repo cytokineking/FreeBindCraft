@@ -29,6 +29,7 @@ import argparse
 from typing import Dict, Any, List, Tuple, Optional, Set
 
 import pandas as pd
+import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 # Ensure repository root is on sys.path so that 'functions' package can be imported from extras/
@@ -36,7 +37,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from functions.pyrosetta_utils import score_interface, PYROSETTA_AVAILABLE, pr
+from functions.pyrosetta_utils import score_interface, PYROSETTA_AVAILABLE, pr, pr_relax
 
 
 ###############################################################################
@@ -217,7 +218,8 @@ def rescore_one_pdb(pdb_path: str, binder_chain: str, model_index: int,
                     filter_mode: str, global_filters_json: Optional[Dict[str, Any]],
                     filters_base_from_row: Optional[str],
                     dalphaball_path: Optional[str] = None,
-                    verbose: bool = False) -> Dict[str, Any]:
+                    verbose: bool = False,
+                    fast_relax: bool = False) -> Dict[str, Any]:
     """Rescore a single PDB with PyRosetta, evaluate filters, and assemble an output row."""
     global _PROCESS_PYROSETTA_READY
 
@@ -247,10 +249,22 @@ def rescore_one_pdb(pdb_path: str, binder_chain: str, model_index: int,
 
     rosetta_metrics_by_base: Dict[str, Any] = {}
     rosetta_interface_aas: Optional[Dict[str, int]] = None
-    rosetta_interface_residues: Optional[str] = None
     try:
+        pdb_for_scoring = pdb_path
+        tmp_relaxed_path = None
+        if fast_relax:
+            # Create temp output path for relaxed PDB
+            fd, tmp_relaxed_path = tempfile.mkstemp(suffix='.pdb')
+            os.close(fd)
+            try:
+                pr_relax(pdb_path, tmp_relaxed_path, use_pyrosetta=True)
+                pdb_for_scoring = tmp_relaxed_path
+            except Exception as e_relax:
+                out["relax_error"] = str(e_relax)
+                pdb_for_scoring = pdb_path
+
         interface_scores, interface_aa, interface_residues = score_interface(
-            pdb_path, binder_chain=binder_chain, use_pyrosetta=True
+            pdb_for_scoring, binder_chain=binder_chain, use_pyrosetta=True
         )
         # Map to base names and prefix for CSV
         for k_src, v in interface_scores.items():
@@ -259,9 +273,14 @@ def rescore_one_pdb(pdb_path: str, binder_chain: str, model_index: int,
                 rosetta_metrics_by_base[base] = v
                 out[f"rosetta_{base}"] = v
         rosetta_interface_aas = interface_aa
-        rosetta_interface_residues = interface_residues
         out["rosetta_InterfaceAAs"] = json.dumps(interface_aa)
         out["rosetta_InterfaceResidues"] = interface_residues
+        # Cleanup temp file if created
+        if fast_relax and tmp_relaxed_path and os.path.isfile(tmp_relaxed_path):
+            try:
+                os.remove(tmp_relaxed_path)
+            except Exception:
+                pass
     except Exception as e:
         out["error"] = f"rosetta_score_failed: {e}"
         # Can't evaluate filters without rosetta metrics
@@ -431,6 +450,7 @@ def main() -> None:
     parser.add_argument("--filters-path", required=False, type=str, default=None, help="Path to filters JSON if --filter-mode custom")
     parser.add_argument("--workers", "-w", required=False, type=int, default=1, help="Number of worker processes (default: 1)")
     parser.add_argument("--output", required=False, type=str, default=None, help="Output CSV path; defaults beside the PDB folder being analyzed")
+    parser.add_argument("--fast-relax", action="store_true", help="Perform PyRosetta FastRelax on each PDB prior to scoring")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose progress logs")
     args = parser.parse_args()
 
@@ -506,7 +526,7 @@ def main() -> None:
             row = rescore_one_pdb(
                 pdb_path, binder_chain, model, mpnn_row,
                 args.filter_mode, global_filters_json, filters_base,
-                dalphaball_path, args.verbose
+                dalphaball_path, args.verbose, args.fast_relax
             )
             rows_out.append(row)
     else:
@@ -524,7 +544,7 @@ def main() -> None:
                     rescore_one_pdb,
                     pdb_path, binder_chain, model, mpnn_row,
                     args.filter_mode, global_filters_json, filters_base,
-                    dalphaball_path, args.verbose
+                    dalphaball_path, args.verbose, args.fast_relax
                 )
                 future_to_path[fut] = pdb_path
             completed = 0
