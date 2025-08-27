@@ -10,7 +10,7 @@ rosetta_failed_filters.
 
 Usage:
   python extras/rescore_accepted_with_rosetta.py --design-path /path/to/run \
-      [--filter-mode default|relaxed|design|custom] [--filters-path FILE] [--workers 4] [--output out.csv]
+      [--filter-mode default|relaxed|design|custom] [--filters-path FILE] [--workers 4] [--output out.csv] [--fast-relax]
 
 Notes:
   - Binder chain is assumed to be 'B'.
@@ -19,6 +19,9 @@ Notes:
   - Filters in 'design' mode are loaded based on the 'Filters' column value per row from mpnn_design_stats.csv;
     files are resolved in the current working directory (e.g., default_filters.json), consistent with
     extras/analyze_bindcraft_rejections.py.
+  - Optional but recommended for consistency: use --fast-relax to run PyRosetta FastRelax on each PDB
+    into a temporary file prior to scoring; on relax failure, the script logs the error and scores the
+    original PDB.
 """
 
 import os

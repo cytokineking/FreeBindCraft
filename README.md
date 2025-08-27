@@ -219,6 +219,7 @@ This repository includes additional scripts and documents in `extras/` to assist
 - `extras/check_ulimit.sh`: Helper script to check system ulimit and suggest adjustments for many-parallel-file workloads.
 - `extras/compare_interface_metrics_all.py`: Compute interface metrics via PyRosetta (if available), FreeSASA, and Biopython across a folder of PDBs; outputs a combined CSV.
 - `extras/compare_pyrosetta_bypass_scores.py`: Side-by-side comparison of PyRosetta vs Biopython-only metrics for a folder of PDBs.
+- `extras/rescore_accepted_with_rosetta.py`: Rescore accepted (Ranked preferred) PDBs from a `--no-pyrosetta` run using PyRosetta, evaluate whether PyRosetta-driven filters would reject each design, and report failing filters. Supports dynamic filters (`default|relaxed|design|custom`), parallel workers, and an optional `--fast-relax` mode to run PyRosetta FastRelax prior to scoring.
 - `extras/test_openmm_relax.py`: Quick test harness for OpenMM and PyRosetta relax routines.
 
 See `extras/README.md` for detailed usage examples and options.

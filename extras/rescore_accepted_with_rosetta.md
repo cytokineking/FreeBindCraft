@@ -27,13 +27,15 @@
   - Else: `<design-path>/Accepted/rosetta_rescore.csv`
 - `--workers`, `-w` (optional): Number of worker processes; default `1`.
 - `--verbose` (optional): Print progress.
+- `--fast-relax` (optional, but recommended for consistency): Perform PyRosetta FastRelax on each PDB into a temporary file prior to scoring; on relax failure, log and score the original PDB.
 
 Example:
 ```bash
 python extras/rescore_accepted_with_rosetta.py \
   --design-path /path/to/run \
   --filter-mode design \
-  --workers 4
+  --workers 4 \
+  --fast-relax
 ```
 
 ### Inputs and discovery
@@ -68,6 +70,10 @@ python extras/rescore_accepted_with_rosetta.py \
 - For each PDB, call `functions.pyrosetta_utils.score_interface(pdb, binder_chain='B', use_pyrosetta=True)` and collect:
   - `binder_score`, `surface_hydrophobicity`, `interface_sc`, `interface_packstat`, `interface_dG`, `interface_dSASA`, `interface_dG_SASA_ratio`, `interface_fraction`, `interface_hydrophobicity`, `interface_nres`, `interface_interface_hbonds`, `interface_hbond_percentage`, `interface_delta_unsat_hbonds`, `interface_delta_unsat_hbonds_percentage`, `interface_AA`.
 - Prefix these as `rosetta_<metric>`.
+
+#### Optional FastRelax pre-scoring
+- If `--fast-relax` is set, run `functions.pyrosetta_utils.pr_relax(input_pdb, tmp_relaxed, use_pyrosetta=True)` and score `tmp_relaxed`.
+- If FastRelax errors, record `relax_error` in the output row and fall back to scoring the original PDB.
 
 ### Filter evaluation (PyRosetta-driven)
 - Load active filters using logic adapted from `extras/analyze_bindcraft_rejections.py`:
