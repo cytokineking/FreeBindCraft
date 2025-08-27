@@ -45,6 +45,18 @@ This folder contains accessory scripts and documents to support BindCraft runs, 
     python extras/compare_pyrosetta_bypass_scores.py --pdb-dir /path/to/pdbs --binder-chain B
     ```
 
+- `rescore_accepted_with_rosetta.py`
+  - Purpose: Rescore accepted (Ranked preferred) PDBs from a `--no-pyrosetta` run with PyRosetta, evaluate whether PyRosetta-driven filters would reject each design, and report which filters failed. Outputs side-by-side `bypass_` (from run CSV) and `rosetta_` metrics and pass/fail columns.
+  - Highlights: supports dynamic filters (`default|relaxed|design|custom`), parallel workers, and optional `--fast-relax` to run PyRosetta FastRelax before scoring (recommended for consistency).
+  - Usage:
+    ```bash
+    python extras/rescore_accepted_with_rosetta.py \
+      --design-path /path/to/run \
+      --filter-mode design \
+      --workers 8 \
+      --fast-relax
+    ```
+
 - `test_openmm_relax.py`
   - Purpose: Test harness to run OpenMM and PyRosetta relaxation on a single PDB, writing two outputs for comparison.
   - Usage:
@@ -56,6 +68,8 @@ This folder contains accessory scripts and documents to support BindCraft runs, 
 
 - The scripts assume the repository root is importable; they update `sys.path` at runtime from within `extras/`.
 - Some utilities expect executables in `functions/` (e.g., `dssp`, optional `DAlphaBall.gcc`, and optional `sc` from `sc-rs`). The scripts attempt to `chmod +x` these if needed.
+
+For a deeper discussion of PyRosetta bypass design choices, metric mappings, and empirical comparisons, see the technical overview: `extras/FreeBindCraft_Technical_Overview.md`.
 
 ## References
 
