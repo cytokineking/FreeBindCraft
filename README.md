@@ -78,8 +78,6 @@ docker build -t freebindcraft:gpu .
 mkdir -p ~/bindcraft_out
 docker run --gpus all --rm -it \
   --ulimit nofile=65536:65536 \
-  -e OPENMM_PLATFORM_ORDER=OpenCL,CPU \
-  -e OPENMM_DEFAULT_PLATFORM=OpenCL \
   -v ~/bindcraft_out:/work/out \
   freebindcraft:gpu \
   python extras/test_openmm_relax.py example/PDL1.pdb /work/out/relax_test
@@ -93,8 +91,6 @@ docker run --gpus all --rm -it \
 mkdir -p ~/bindcraft_runs/pdl1
 docker run --gpus all --rm -it \
   --ulimit nofile=65536:65536 \
-  -e OPENMM_PLATFORM_ORDER=OpenCL,CPU \
-  -e OPENMM_DEFAULT_PLATFORM=OpenCL \
   -v ~/bindcraft_runs/pdl1:/root/software/pdl1 \
   freebindcraft:gpu \
   python bindcraft.py \

@@ -65,8 +65,8 @@ ENV PATH=${CONDA_DIR}/envs/BindCraft/bin:${CONDA_DIR}/bin:${PATH} \
     PYTHONUNBUFFERED=1 \
     BINDCRAFT_HOME=/app
 
-# Prefer OpenCL in OpenMM by default (can be overridden at runtime)
-ENV OPENMM_PLATFORM_ORDER=OpenCL,CPU \
+# Prefer OpenCL (fallback to CUDA) in OpenMM by default
+ENV OPENMM_PLATFORM_ORDER=OpenCL,CUDA \
     OPENMM_DEFAULT_PLATFORM=OpenCL
 
 # Modal-compatible entrypoint that execs args
