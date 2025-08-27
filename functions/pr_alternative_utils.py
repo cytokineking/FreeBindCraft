@@ -882,7 +882,11 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         gc.collect()
         elapsed_total = time.time() - start_time
         print(f"[OpenMM-Relax] ERROR; copied input to output for {basename} after {elapsed_total:.2f}s")
-        return platform_name_used
+        # Guard against 'platform_name_used' not being assigned yet
+        try:
+            return platform_name_used
+        except UnboundLocalError:
+            return None
 
 def pr_alternative_score_interface(pdb_file, binder_chain="B", sasa_engine="auto"):
     """
@@ -1047,8 +1051,7 @@ def openmm_relax_subprocess(pdb_file_path, output_pdb_path, use_gpu_relax=True, 
     code_parts.append("from functions.pr_alternative_utils import openmm_relax")
     code_parts.append(
         f"plat = openmm_relax({pdb_file_path!r}, {output_pdb_path!r}, use_gpu_relax={bool(use_gpu_relax)})"
-    )
-    code_parts.append("print(plat or '')")
+    )    
     py_code = "; ".join(code_parts)
 
     # Signature to detect soft fallback path inside child (input copied to output)

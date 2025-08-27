@@ -49,62 +49,6 @@ For the motivation behind the PyRosetta bypass, implementation details (OpenMM r
     bash install_bindcraft.sh --cuda '12.4' --pkg_manager 'conda'
     ```
 
-## Containerized usage (Docker)
-
-You can run FreeBindCraft in a GPU-enabled Docker container as an alternative to the install script.
-
-### Prerequisites (on the host)
-
-- NVIDIA driver installed (check with `nvidia-smi`).
-- Docker CE and NVIDIA Container Toolkit:
-  - Linux (Ubuntu):
-    1) Install Docker CE and restart the daemon.
-    2) `sudo apt-get install -y nvidia-container-toolkit`
-    3) `sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker`
-  - Validate GPU availability inside containers:
-    ```bash
-    docker run --rm --gpus all nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 nvidia-smi
-    ```
-
-### Build the image
-
-```bash
-docker build -t freebindcraft:gpu .
-``
-
-### Quick sanity test (OpenMM relax)
-
-```bash
-mkdir -p ~/bindcraft_out
-docker run --gpus all --rm -it \
-  --ulimit nofile=65536:65536 \
-  -v ~/bindcraft_out:/work/out \
-  freebindcraft:gpu \
-  python extras/test_openmm_relax.py example/PDL1.pdb /work/out/relax_test
-```
-
-### Run a full BindCraft job (example: `settings_target/PDL1.json`)
-
-`settings_target/PDL1.json` uses `"design_path": "/root/software/pdl1/"`. Mount a host directory there:
-
-```bash
-mkdir -p ~/bindcraft_runs/pdl1
-docker run --gpus all --rm -it \
-  --ulimit nofile=65536:65536 \
-  -v ~/bindcraft_runs/pdl1:/root/software/pdl1 \
-  freebindcraft:gpu \
-  python bindcraft.py \
-    --settings settings_target/PDL1.json \
-    --filters settings_filters/default_filters.json \
-    --advanced settings_advanced/default_4stage_multimer.json \
-    --no-pyrosetta
-```
-
-### Note on file descriptor limits
-
-- FreeBindCraft opens many files during long runs. You should raise the container file limit via `--ulimit nofile=65536:65536` on `docker run` (shown above).
-- This image also includes an entrypoint that attempts to raise the soft limit inside the container. Passing `--ulimit` ensures the host allows it and is recommended.
-
 ## Running BindCraft
 
 Activate the Conda environment:
@@ -147,6 +91,117 @@ python -u ./bindcraft.py \
   --advanced './settings_advanced/default_4stage_multimer.json' \
   --no-animations --no-plots --verbose
 ```
+
+## Containerized usage (Docker)
+
+Run FreeBindCraft in a GPU-enabled Docker container (either build locally or pull a prebuilt image).
+
+### Prerequisites (on the host)
+
+- NVIDIA driver installed (check with `nvidia-smi`).
+- Docker CE and NVIDIA Container Toolkit:
+  - Linux (Ubuntu):
+    1) Install Docker CE and restart the daemon.
+    2) `sudo apt-get install -y nvidia-container-toolkit`
+    3) `sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker`
+  - Validate GPU availability inside containers:
+    ```bash
+    docker run --rm --gpus all nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 nvidia-smi
+    ```
+
+### Option A: Build the image from this repository
+
+```bash
+docker build -t freebindcraft:gpu .
+```
+
+Sanity test (OpenMM relax):
+```bash
+mkdir -p ~/bindcraft_out
+docker run --gpus all --rm -it \
+  --ulimit nofile=65536:65536 \
+  -v ~/bindcraft_out:/work/out \
+  freebindcraft:gpu \
+  python extras/test_openmm_relax.py example/PDL1.pdb /work/out/relax_test
+```
+
+### Option B: Pull the prebuilt image from Docker Hub
+
+- Image: `cytokineking/freebindcraft-no-pyrosetta:latest`
+- Digest: `sha256:352d0707e1d87ae24e18b2dfc555645ae00dd806f43a5099aa2d9ee79981efc5`
+
+```bash
+docker pull cytokineking/freebindcraft-no-pyrosetta:latest
+```
+
+Sanity test (OpenMM relax):
+```bash
+mkdir -p ~/bindcraft_out
+docker run --gpus all --rm -it \
+  --ulimit nofile=65536:65536 \
+  -v ~/bindcraft_out:/work/out \
+  cytokineking/freebindcraft-no-pyrosetta:latest \
+  python extras/test_openmm_relax.py example/PDL1.pdb /work/out/relax_test
+```
+
+### Running BindCraft in Docker (general guidance)
+
+Decide where your inputs and outputs live. Typical layout:
+- Host input PDB: `/path/on/host/your_target.pdb`
+- Host output dir: `/path/on/host/run_outputs`
+- Settings files: either use repo defaults inside the container or mount your own copies from the host
+
+Examples:
+1) Use repository defaults for settings (inside container), but mount outputs to host.
+```bash
+mkdir -p /path/on/host/run_outputs
+docker run --gpus all --rm -it \
+  --ulimit nofile=65536:65536 \
+  -v /path/on/host/run_outputs:/root/software/pdl1 \
+  cytokineking/freebindcraft-no-pyrosetta:latest \
+  python bindcraft.py \
+    --settings settings_target/PDL1.json \
+    --filters settings_filters/default_filters.json \
+    --advanced settings_advanced/default_4stage_multimer.json \
+    --no-pyrosetta
+```
+
+2) Mount a custom target settings JSON from the host (also mount your input PDB):
+```bash
+mkdir -p /path/on/host/run_outputs
+docker run --gpus all --rm -it \
+  --ulimit nofile=65536:65536 \
+  -v /path/on/host/run_outputs:/root/software/pdl1 \
+  -v /path/on/host/my_settings.json:/app/settings_target/my_settings.json:ro \
+  -v /path/on/host/your_target.pdb:/app/example/your_target.pdb:ro \
+  cytokineking/freebindcraft-no-pyrosetta:latest \
+  python bindcraft.py \
+    --settings /app/settings_target/my_settings.json \
+    --filters settings_filters/default_filters.json \
+    --advanced settings_advanced/default_4stage_multimer.json \
+    --no-pyrosetta
+```
+
+3) Mount custom filters/advanced settings from the host too:
+```bash
+docker run --gpus all --rm -it \
+  --ulimit nofile=65536:65536 \
+  -v /path/on/host/run_outputs:/root/software/pdl1 \
+  -v /path/on/host/my_settings.json:/app/settings_target/my_settings.json:ro \
+  -v /path/on/host/my_filters.json:/app/settings_filters/my_filters.json:ro \
+  -v /path/on/host/my_advanced.json:/app/settings_advanced/my_advanced.json:ro \
+  -v /path/on/host/your_target.pdb:/app/example/your_target.pdb:ro \
+  cytokineking/freebindcraft-no-pyrosetta:latest \
+  python bindcraft.py \
+    --settings /app/settings_target/my_settings.json \
+    --filters /app/settings_filters/my_filters.json \
+    --advanced /app/settings_advanced/my_advanced.json \
+    --no-pyrosetta
+```
+
+Notes:
+- Always mount your output directory to the path set as `design_path` in your target settings (e.g., `/root/software/pdl1`).
+- Always increase file descriptor limits with `--ulimit nofile=65536:65536`. The image’s entrypoint also attempts to raise the soft limit inside the container.
 
 ## Citations & External Tools
 
