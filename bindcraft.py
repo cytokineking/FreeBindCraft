@@ -122,79 +122,129 @@ def _prompt_interactive_and_prepare_args(args):
     advanced_dir = os.path.join(base_dir, 'settings_advanced')
 
     print("\nBindCraft Interactive Setup\n")
-
-    # Required inputs
-    project_name = _input_with_default("Enter project/binder name:", None)
-    while not project_name:
-        print("Project name is required.")
+    while True:
+        # Required inputs
         project_name = _input_with_default("Enter project/binder name:", None)
+        while not project_name:
+            print("Project name is required.")
+            project_name = _input_with_default("Enter project/binder name:", None)
 
-    pdb_path = _input_with_default("Enter path to PDB file:", None)
-    while not pdb_path or not os.path.isabs(os.path.expanduser(pdb_path)) and not os.path.exists(os.path.expanduser(pdb_path)):
-        # Allow relative paths too; just ensure something was given
-        if pdb_path:
-            break
-        print("PDB path is required.")
         pdb_path = _input_with_default("Enter path to PDB file:", None)
-    pdb_path = os.path.abspath(os.path.expanduser(pdb_path))
-    if not os.path.exists(pdb_path):
-        print(f"Warning: PDB path '{pdb_path}' does not exist at prompt time. Make sure it will be available.")
+        while not pdb_path or not os.path.isabs(os.path.expanduser(pdb_path)) and not os.path.exists(os.path.expanduser(pdb_path)):
+            # Allow relative paths too; just ensure something was given
+            if pdb_path:
+                break
+            print("PDB path is required.")
+            pdb_path = _input_with_default("Enter path to PDB file:", None)
+        pdb_path = os.path.abspath(os.path.expanduser(pdb_path))
+        if not os.path.exists(pdb_path):
+            print(f"Warning: PDB path '{pdb_path}' does not exist at prompt time. Make sure it will be available.")
 
-    output_dir = _input_with_default("Enter output directory:", os.path.join(os.getcwd(), f"{project_name}_bindcraft_out"))
-    output_dir = os.path.abspath(os.path.expanduser(output_dir))
-    os.makedirs(output_dir, exist_ok=True)
+        output_dir = _input_with_default("Enter output directory:", os.path.join(os.getcwd(), f"{project_name}_bindcraft_out"))
+        output_dir = os.path.abspath(os.path.expanduser(output_dir))
+        os.makedirs(output_dir, exist_ok=True)
 
-    chains = _input_with_default("Enter target chains (e.g., A or A,B):", "A")
-    hotspots = _input_with_default("Enter hotspot residues (e.g., 56 or 56,57-60):", "56")
+        chains = _input_with_default("Enter target chains (e.g., A or A,B):", "A")
+        hotspots = _input_with_default("Enter hotspot residue(s) for BindCraft to target. Use format: chain letter + residue numbers (e.g., 'A1,B20-25'). Leave empty for no preference:", "")
 
-    lengths_input = _input_with_default("Enter min and max lengths (default 65 150):", "65 150")
-    try:
-        min_len_str, max_len_str = lengths_input.split()
-        lengths = [int(min_len_str), int(max_len_str)]
-    except Exception:
-        print("Invalid lengths; using default 65 150.")
-        lengths = [65, 150]
-
-    num_designs_str = _input_with_default("Enter number of final designs (default 100):", "100")
-    try:
-        num_designs = int(num_designs_str)
-    except Exception:
-        num_designs = 100
-
-    # List choices
-    print("\nAvailable filter settings:")
-    filter_choices = _list_json_choices(filters_dir)
-    for i, (name, _) in enumerate(filter_choices, 1):
-        print(f"{i}. {name}")
-    filter_idx = _input_with_default("Choose filter (press Enter for default_filters):", "")
-    if filter_idx:
+        lengths_input = _input_with_default("Enter min and max lengths separated by space or comma (default 65 150):", "65 150")
         try:
-            filter_idx_int = int(filter_idx)
-            selected_filter = filter_choices[filter_idx_int - 1][1]
+            normalized = lengths_input.replace(',', ' ').split()
+            min_len_str, max_len_str = normalized[0], normalized[1]
+            lengths = [int(min_len_str), int(max_len_str)]
         except Exception:
+            print("Invalid lengths; using default 65 150.")
+            lengths = [65, 150]
+
+        num_designs_str = _input_with_default("Enter number of final designs (default 100):", "100")
+        try:
+            num_designs = int(num_designs_str)
+        except Exception:
+            num_designs = 100
+
+        # List choices
+        print("\nAvailable filter settings:")
+        filter_choices = _list_json_choices(filters_dir)
+        for i, (name, _) in enumerate(filter_choices, 1):
+            print(f"{i}. {name}")
+        filter_idx = _input_with_default("Choose filter (press Enter for default_filters):", "")
+        if filter_idx:
+            try:
+                filter_idx_int = int(filter_idx)
+                selected_filter = filter_choices[filter_idx_int - 1][1]
+            except Exception:
+                selected_filter = os.path.join(filters_dir, 'default_filters.json')
+        else:
             selected_filter = os.path.join(filters_dir, 'default_filters.json')
-    else:
-        selected_filter = os.path.join(filters_dir, 'default_filters.json')
 
-    print("\nAvailable advanced settings:")
-    advanced_choices = _list_json_choices(advanced_dir)
-    for i, (name, _) in enumerate(advanced_choices, 1):
-        print(f"{i}. {name}")
-    advanced_idx = _input_with_default("Choose advanced (press Enter for default_4stage_multimer):", "")
-    if advanced_idx:
-        try:
-            advanced_idx_int = int(advanced_idx)
-            selected_advanced = advanced_choices[advanced_idx_int - 1][1]
-        except Exception:
+        print("\nAvailable advanced settings:")
+        advanced_choices_all = _list_json_choices(advanced_dir)
+        # Reorder according to requested preference
+        desired_order = [
+            'default_4stage_multimer',
+            'default_4stage_multimer_mpnn',
+            'default_4stage_multimer_flexible',
+            'default_4stage_multimer_hardtarget',
+            'default_4stage_multimer_flexible_hardtarget',
+            'default_4stage_multimer_mpnn_flexible',
+            'default_4stage_multimer_mpnn_hardtarget',
+            'default_4stage_multimer_mpnn_flexible_hardtarget',
+            'betasheet_4stage_multimer',
+            'betasheet_4stage_multimer_mpnn',
+            'betasheet_4stage_multimer_flexible',
+            'betasheet_4stage_multimer_hardtarget',
+            'betasheet_4stage_multimer_flexible_hardtarget',
+            'betasheet_4stage_multimer_mpnn_flexible',
+            'betasheet_4stage_multimer_mpnn_hardtarget',
+            'betasheet_4stage_multimer_mpnn_flexible_hardtarget',
+            'peptide_3stage_multimer',
+            'peptide_3stage_multimer_mpnn',
+            'peptide_3stage_multimer_flexible',
+            'peptide_3stage_multimer_mpnn_flexible'
+        ]
+        name_to_path = {name: path for name, path in advanced_choices_all}
+        ordered_adv = [(name, name_to_path[name]) for name in desired_order if name in name_to_path]
+        # Append any remaining choices not in desired list
+        remaining = [(name, path) for name, path in advanced_choices_all if name not in name_to_path or name not in desired_order]
+        ordered_adv.extend(sorted(remaining, key=lambda x: x[0]))
+        for i, (name, _) in enumerate(ordered_adv, 1):
+            print(f"{i}. {name}")
+        advanced_idx = _input_with_default("Choose advanced (press Enter for default_4stage_multimer):", "")
+        if advanced_idx:
+            try:
+                advanced_idx_int = int(advanced_idx)
+                selected_advanced = ordered_adv[advanced_idx_int - 1][1]
+            except Exception:
+                selected_advanced = os.path.join(advanced_dir, 'default_4stage_multimer.json')
+        else:
             selected_advanced = os.path.join(advanced_dir, 'default_4stage_multimer.json')
-    else:
-        selected_advanced = os.path.join(advanced_dir, 'default_4stage_multimer.json')
 
-    # Toggles
-    verbose = _yes_no("Enable verbose output?", default_yes=False)
-    plots_on = _yes_no("Enable saving plots?", default_yes=True)
-    animations_on = _yes_no("Enable saving animations?", default_yes=True)
-    disable_pyrosetta = _yes_no("Run without PyRosetta?", default_yes=False)
+        # Toggles
+        verbose = _yes_no("Enable verbose output?", default_yes=False)
+        plots_on = _yes_no("Enable saving plots?", default_yes=True)
+        animations_on = _yes_no("Enable saving animations?", default_yes=True)
+        run_with_pyrosetta = _yes_no("Run with PyRosetta?", default_yes=True)
+
+        # Summary for confirmation
+        print("\nConfiguration Summary:")
+        print(f"Project Name: {project_name}")
+        print(f"PDB File: {pdb_path}")
+        print(f"Output Directory: {output_dir}")
+        print(f"Chains: {chains}")
+        print(f"Hotspots: {hotspots if hotspots else 'None'}")
+        print(f"Length Range: {lengths}")
+        print(f"Number of Final Designs: {num_designs}")
+        print(f"Filter Setting: {os.path.splitext(os.path.basename(selected_filter))[0]}")
+        print(f"Advanced Setting: {os.path.splitext(os.path.basename(selected_advanced))[0]}")
+        print(f"Verbose: {'Yes' if verbose else 'No'}")
+        print(f"Plots: {'On' if plots_on else 'Off'}")
+        print(f"Animations: {'On' if animations_on else 'Off'}")
+        print(f"PyRosetta: {'On' if run_with_pyrosetta else 'Off'}")
+
+        if _yes_no("Proceed with these settings?", default_yes=True):
+            break
+        else:
+            print("Let's re-enter the details.\n")
 
     # Prepare target settings JSON
     target_settings = {
@@ -224,7 +274,7 @@ def _prompt_interactive_and_prepare_args(args):
     args.verbose = verbose
     args.no_plots = (not plots_on)
     args.no_animations = (not animations_on)
-    args.no_pyrosetta = disable_pyrosetta
+    args.no_pyrosetta = (not run_with_pyrosetta)
 
     # Optional container run
     use_container = _yes_no("Run using a Docker container?", default_yes=False)
