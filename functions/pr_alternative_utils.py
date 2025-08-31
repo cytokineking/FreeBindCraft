@@ -888,7 +888,7 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         except UnboundLocalError:
             return None
 
-def pr_alternative_score_interface(pdb_file, binder_chain="B", sasa_engine="auto"):
+def pr_alternative_score_interface(pdb_file, binder_chain="B", target_chain="A", sasa_engine="auto"):
     """
     Calculate interface scores using PyRosetta-free alternatives including SCASA shape complementarity.
     
@@ -939,7 +939,7 @@ def pr_alternative_score_interface(pdb_file, binder_chain="B", sasa_engine="auto
         binder_sasa_monomer, \
         target_sasa_in_complex, \
         target_sasa_monomer = _compute_sasa_metrics(
-            pdb_file, binder_chain=binder_chain, target_chain='A'
+            pdb_file, binder_chain=binder_chain, target_chain=target_chain 
         )
     elif str(sasa_engine).lower() == "freesasa":
         vprint(f"[Alt-Score] Computing SASA with FreeSASA...")
@@ -948,7 +948,7 @@ def pr_alternative_score_interface(pdb_file, binder_chain="B", sasa_engine="auto
         binder_sasa_monomer, \
         target_sasa_in_complex, \
         target_sasa_monomer = _compute_sasa_metrics_with_freesasa(
-            pdb_file, binder_chain=binder_chain, target_chain='A'
+            pdb_file, binder_chain=binder_chain, target_chain=target_chain 
         )
     else:
         if _HAS_FREESASA:
@@ -958,7 +958,7 @@ def pr_alternative_score_interface(pdb_file, binder_chain="B", sasa_engine="auto
             binder_sasa_monomer, \
             target_sasa_in_complex, \
             target_sasa_monomer = _compute_sasa_metrics_with_freesasa(
-                pdb_file, binder_chain=binder_chain, target_chain='A'
+                pdb_file, binder_chain=binder_chain, target_chain=target_chain 
             )
         else:
             vprint(f"[Alt-Score] Computing SASA with Biopython (auto fallback)...")
@@ -967,7 +967,7 @@ def pr_alternative_score_interface(pdb_file, binder_chain="B", sasa_engine="auto
             binder_sasa_monomer, \
             target_sasa_in_complex, \
             target_sasa_monomer = _compute_sasa_metrics(
-                pdb_file, binder_chain=binder_chain, target_chain='A'
+                pdb_file, binder_chain=binder_chain, target_chain=target_chain 
             )
     vprint(f"[Alt-Score] SASA computations finished in {time.time()-t0_sasa:.2f}s")
 
@@ -985,7 +985,7 @@ def pr_alternative_score_interface(pdb_file, binder_chain="B", sasa_engine="auto
     # Calculate shape complementarity using SCASA
     t0_sc = time.time()
     vprint(f"[Alt-Score] Computing shape complementarity (SC)...")
-    interface_sc = _calculate_shape_complementarity(pdb_file, binder_chain, target_chain='A')
+    interface_sc = _calculate_shape_complementarity(pdb_file, binder_chain, target_chain=target_chain)
     vprint(f"[Alt-Score] SC computation finished in {time.time()-t0_sc:.2f}s")
     
     # Fixed placeholder values for metrics that are not currently computed without PyRosetta
