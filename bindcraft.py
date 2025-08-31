@@ -7,6 +7,10 @@ from functions import *
 from functions.generic_utils import insert_data # Explicit import for insert_data
 from functions.biopython_utils import clear_dssp_cache # Explicit import for DSSP cache management
 import logging
+import os
+import sys
+import subprocess
+import shlex
 try:
     import resource  # POSIX-only; used to raise RLIMIT_NOFILE (ulimit -n)
 except Exception:
@@ -31,8 +35,7 @@ def _bump_open_files_limit(min_soft=65536):
 # Raise file descriptor soft limit early to avoid 'Too many open files'
 _bump_open_files_limit(min_soft=65536)
 
-# Check if JAX-capable GPU is available, otherwise exit
-check_jax_gpu()
+# Defer GPU availability check until after CLI/interactive handling
 
 def ensure_binaries_executable(use_pyrosetta=True):
     """Ensure all required binaries in functions/ are executable."""
@@ -63,11 +66,11 @@ def ensure_binaries_executable(use_pyrosetta=True):
 ensure_binaries_executable()
 
 ######################################
-### parse input paths
+### parse input paths and interactive mode
 parser = argparse.ArgumentParser(description='Script to run BindCraft binder design.')
 
-parser.add_argument('--settings', '-s', type=str, required=True,
-                    help='Path to the basic settings.json file. Required.')
+parser.add_argument('--settings', '-s', type=str, required=False,
+                    help='Path to the basic settings.json file. If omitted in a TTY, interactive mode is used.')
 parser.add_argument('--filters', '-f', type=str, default='./settings_filters/default_filters.json',
                     help='Path to the filters.json file used to filter design. If not provided, default will be used.')
 parser.add_argument('--advanced', '-a', type=str, default='./settings_advanced/default_4stage_multimer.json',
@@ -80,8 +83,252 @@ parser.add_argument('--no-plots', action='store_true',
                     help='Disable saving design trajectory plots (overrides advanced settings)')
 parser.add_argument('--no-animations', action='store_true',
                     help='Disable saving design animations (overrides advanced settings)')
+parser.add_argument('--interactive', action='store_true',
+                    help='Force interactive mode to collect target settings and options')
 
 args = parser.parse_args()
+
+def _isatty_stdin():
+    try:
+        return sys.stdin.isatty()
+    except Exception:
+        return False
+
+def _input_with_default(prompt_text, default_value=None):
+    if default_value is None:
+        return input(prompt_text).strip()
+    resp = input(f"{prompt_text} ").strip()
+    return resp if resp else default_value
+
+def _yes_no(prompt_text, default_yes=False):
+    default_hint = 'Y/n' if default_yes else 'y/N'
+    resp = input(f"{prompt_text} ({default_hint}): ").strip().lower()
+    if resp == '':
+        return default_yes
+    return resp in ('y', 'yes')
+
+def _list_json_choices(folder_path):
+    try:
+        entries = [f for f in os.listdir(folder_path) if f.endswith('.json') and not f.startswith('.')]
+    except Exception:
+        entries = []
+    entries.sort()
+    # return list of (display_name_without_ext, abspath)
+    return [(os.path.splitext(f)[0], os.path.join(folder_path, f)) for f in entries]
+
+def _prompt_interactive_and_prepare_args(args):
+    base_dir = os.path.dirname(os.path.realpath(__file__))
+    filters_dir = os.path.join(base_dir, 'settings_filters')
+    advanced_dir = os.path.join(base_dir, 'settings_advanced')
+
+    print("\nBindCraft Interactive Setup\n")
+
+    # Required inputs
+    project_name = _input_with_default("Enter project/binder name:", None)
+    while not project_name:
+        print("Project name is required.")
+        project_name = _input_with_default("Enter project/binder name:", None)
+
+    pdb_path = _input_with_default("Enter path to PDB file:", None)
+    while not pdb_path or not os.path.isabs(os.path.expanduser(pdb_path)) and not os.path.exists(os.path.expanduser(pdb_path)):
+        # Allow relative paths too; just ensure something was given
+        if pdb_path:
+            break
+        print("PDB path is required.")
+        pdb_path = _input_with_default("Enter path to PDB file:", None)
+    pdb_path = os.path.abspath(os.path.expanduser(pdb_path))
+    if not os.path.exists(pdb_path):
+        print(f"Warning: PDB path '{pdb_path}' does not exist at prompt time. Make sure it will be available.")
+
+    output_dir = _input_with_default("Enter output directory:", os.path.join(os.getcwd(), f"{project_name}_bindcraft_out"))
+    output_dir = os.path.abspath(os.path.expanduser(output_dir))
+    os.makedirs(output_dir, exist_ok=True)
+
+    chains = _input_with_default("Enter target chains (e.g., A or A,B):", "A")
+    hotspots = _input_with_default("Enter hotspot residues (e.g., 56 or 56,57-60):", "56")
+
+    lengths_input = _input_with_default("Enter min and max lengths (default 65 150):", "65 150")
+    try:
+        min_len_str, max_len_str = lengths_input.split()
+        lengths = [int(min_len_str), int(max_len_str)]
+    except Exception:
+        print("Invalid lengths; using default 65 150.")
+        lengths = [65, 150]
+
+    num_designs_str = _input_with_default("Enter number of final designs (default 100):", "100")
+    try:
+        num_designs = int(num_designs_str)
+    except Exception:
+        num_designs = 100
+
+    # List choices
+    print("\nAvailable filter settings:")
+    filter_choices = _list_json_choices(filters_dir)
+    for i, (name, _) in enumerate(filter_choices, 1):
+        print(f"{i}. {name}")
+    filter_idx = _input_with_default("Choose filter (press Enter for default_filters):", "")
+    if filter_idx:
+        try:
+            filter_idx_int = int(filter_idx)
+            selected_filter = filter_choices[filter_idx_int - 1][1]
+        except Exception:
+            selected_filter = os.path.join(filters_dir, 'default_filters.json')
+    else:
+        selected_filter = os.path.join(filters_dir, 'default_filters.json')
+
+    print("\nAvailable advanced settings:")
+    advanced_choices = _list_json_choices(advanced_dir)
+    for i, (name, _) in enumerate(advanced_choices, 1):
+        print(f"{i}. {name}")
+    advanced_idx = _input_with_default("Choose advanced (press Enter for default_4stage_multimer):", "")
+    if advanced_idx:
+        try:
+            advanced_idx_int = int(advanced_idx)
+            selected_advanced = advanced_choices[advanced_idx_int - 1][1]
+        except Exception:
+            selected_advanced = os.path.join(advanced_dir, 'default_4stage_multimer.json')
+    else:
+        selected_advanced = os.path.join(advanced_dir, 'default_4stage_multimer.json')
+
+    # Toggles
+    verbose = _yes_no("Enable verbose output?", default_yes=False)
+    plots_on = _yes_no("Enable saving plots?", default_yes=True)
+    animations_on = _yes_no("Enable saving animations?", default_yes=True)
+    disable_pyrosetta = _yes_no("Run without PyRosetta?", default_yes=False)
+
+    # Prepare target settings JSON
+    target_settings = {
+        "design_path": output_dir,
+        "binder_name": project_name,
+        "starting_pdb": pdb_path,
+        "chains": chains,
+        "target_hotspot_residues": hotspots,
+        "lengths": lengths,
+        "number_of_final_designs": num_designs
+    }
+
+    timestamp = time.strftime('%Y%m%d_%H%M%S')
+    settings_filename = f"interactive_{project_name}_{timestamp}.json"
+    settings_path_out = os.path.join(output_dir, settings_filename)
+    try:
+        with open(settings_path_out, 'w') as f:
+            json.dump(target_settings, f, indent=2)
+    except Exception as e:
+        print(f"Error writing settings JSON: {e}")
+        sys.exit(1)
+
+    # Map to args
+    args.settings = settings_path_out
+    args.filters = selected_filter
+    args.advanced = selected_advanced
+    args.verbose = verbose
+    args.no_plots = (not plots_on)
+    args.no_animations = (not animations_on)
+    args.no_pyrosetta = disable_pyrosetta
+
+    # Optional container run
+    use_container = _yes_no("Run using a Docker container?", default_yes=False)
+    if use_container:
+        # Attempt to show running containers
+        try:
+            result = subprocess.run(["docker", "ps", "--format", "{{.ID}}\t{{.Image}}\t{{.Names}}"], capture_output=True, text=True)
+            lines = [ln for ln in result.stdout.strip().splitlines() if ln.strip()]
+        except Exception:
+            lines = []
+
+        if lines:
+            print("\nRunning containers:")
+            for idx, ln in enumerate(lines, 1):
+                print(f"{idx}. {ln}")
+            choice = _input_with_default("Select a running container by number, or press Enter to launch a new one:", "")
+        else:
+            print("No running containers found.")
+            choice = ""
+
+        if choice:
+            try:
+                sel_idx = int(choice)
+                selected_line = lines[sel_idx - 1]
+            except Exception:
+                selected_line = None
+            if selected_line:
+                container_id = selected_line.split('\t')[0]
+                # Try to ensure output dir exists in container
+                try:
+                    subprocess.run(["docker", "exec", container_id, "mkdir", "-p", output_dir], check=False)
+                except Exception:
+                    pass
+                # Copy settings JSON into container at same path
+                try:
+                    subprocess.run(["docker", "cp", settings_path_out, f"{container_id}:{settings_path_out}"], check=True)
+                except Exception as e:
+                    print(f"Failed to copy settings JSON into container: {e}")
+                    sys.exit(1)
+                # Validate PDB exists inside container; if not, warn user
+                try:
+                    rc = subprocess.run(["docker", "exec", container_id, "bash", "-lc", f"test -f {shlex.quote(pdb_path)}"], check=False)
+                    if rc.returncode != 0:
+                        print(f"Warning: PDB '{pdb_path}' not found inside container {container_id}. Ensure the path is valid inside the container.")
+                except Exception:
+                    pass
+                # Build exec command
+                cmd = ["docker", "exec", "-it", container_id, "python", "bindcraft.py",
+                       "-s", settings_path_out, "-f", args.filters, "-a", args.advanced]
+                if args.no_pyrosetta:
+                    cmd.append("--no-pyrosetta")
+                if args.verbose:
+                    cmd.append("--verbose")
+                if args.no_plots:
+                    cmd.append("--no-plots")
+                if args.no_animations:
+                    cmd.append("--no-animations")
+                # Run inside container and exit host process
+                subprocess.run(cmd, check=False)
+                sys.exit(0)
+
+        # Launch a new container with mounts (default image bindcraft:latest)
+        docker_image = _input_with_default("Docker image to use (default bindcraft:latest):", "bindcraft:latest")
+        # Choose single GPU
+        gpu_idx = _input_with_default("GPU index to expose (default 0):", "0")
+
+        # Compute mounts so host paths work unchanged
+        mounts = []
+        cwd = os.getcwd()
+        mounts.append((cwd, cwd))
+        pdb_parent = os.path.dirname(pdb_path)
+        if pdb_parent and os.path.abspath(pdb_parent) != cwd:
+            mounts.append((pdb_parent, pdb_parent))
+        mounts.append((output_dir, output_dir))
+
+        docker_cmd = [
+            "docker", "run", "--rm", "-it",
+            "--gpus", f"device={gpu_idx}",
+        ]
+        for host, cont in mounts:
+            docker_cmd.extend(["-v", f"{host}:{cont}"])
+        docker_cmd.extend(["-w", cwd, docker_image, "python", "bindcraft.py",
+                           "-s", args.settings, "-f", args.filters, "-a", args.advanced])
+        if args.no_pyrosetta:
+            docker_cmd.append("--no-pyrosetta")
+        if args.verbose:
+            docker_cmd.append("--verbose")
+        if args.no_plots:
+            docker_cmd.append("--no-plots")
+        if args.no_animations:
+            docker_cmd.append("--no-animations")
+
+        subprocess.run(docker_cmd, check=False)
+        sys.exit(0)
+
+    return args
+
+# Enter interactive mode if requested or if no settings were provided in a TTY
+if args.interactive or (not args.settings and _isatty_stdin()):
+    args = _prompt_interactive_and_prepare_args(args)
+elif not args.settings and not _isatty_stdin():
+    # No TTY and no settings -> cannot prompt
+    print("Error: --settings is required in non-interactive environments.")
+    sys.exit(1)
 
 # perform checks of input setting files
 settings_path, filters_path, advanced_path = perform_input_check(args)
@@ -101,6 +348,9 @@ for noisy_logger in (
 if args.verbose:
     logging.getLogger("functions").setLevel(logging.DEBUG)
     logging.getLogger("bindcraft").setLevel(logging.DEBUG)
+
+# Check if JAX-capable GPU is available, otherwise exit (after interactive/container handling)
+check_jax_gpu()
 
 ### load settings from JSON
 target_settings, advanced_settings, filters = load_json_settings(settings_path, filters_path, advanced_path)
