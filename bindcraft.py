@@ -129,22 +129,30 @@ def _prompt_interactive_and_prepare_args(args):
     }
 
     while True:
+        # Design type selection
+        print("Design type:")
+        print("1. Miniprotein (31+ aa)")
+        print("2. Peptide (8-30 aa)")
+        dtype_choice = _input_with_default("Choose design type (press Enter for Miniprotein):", "")
+        is_peptide = (dtype_choice.strip() == '2')
+
         # Required inputs
         project_name = _input_with_default("Enter project/binder name:", None)
         while not project_name:
             print("Project name is required.")
             project_name = _input_with_default("Enter project/binder name:", None)
 
-        pdb_path = _input_with_default("Enter path to PDB file:", None)
-        while not pdb_path or not os.path.isabs(os.path.expanduser(pdb_path)) and not os.path.exists(os.path.expanduser(pdb_path)):
-            # Allow relative paths too; just ensure something was given
-            if pdb_path:
+        # Require a valid existing PDB file path; re-prompt until valid
+        while True:
+            pdb_raw = _input_with_default("Enter path to PDB file:", None)
+            if not pdb_raw:
+                print("PDB path is required.")
+                continue
+            candidate = os.path.abspath(os.path.expanduser(pdb_raw))
+            if os.path.isfile(candidate):
+                pdb_path = candidate
                 break
-            print("PDB path is required.")
-            pdb_path = _input_with_default("Enter path to PDB file:", None)
-        pdb_path = os.path.abspath(os.path.expanduser(pdb_path))
-        if not os.path.exists(pdb_path):
-            print(f"Warning: PDB path '{pdb_path}' does not exist at prompt time. Make sure it will be available.")
+            print(f"Error: No PDB file found at '{candidate}'. Please re-enter.")
 
         output_dir = _input_with_default("Enter output directory:", os.path.join(os.getcwd(), f"{project_name}_bindcraft_out"))
         output_dir = os.path.abspath(os.path.expanduser(output_dir))
@@ -153,14 +161,33 @@ def _prompt_interactive_and_prepare_args(args):
         chains = _input_with_default("Enter target chains (e.g., A or A,B):", "A")
         hotspots = _input_with_default("Enter hotspot residue(s) for BindCraft to target. Use format: chain letter + residue numbers (e.g., 'A1,B20-25'). Leave empty for no preference:", "")
 
-        lengths_input = _input_with_default("Enter min and max lengths separated by space or comma (default 65 150):", "65 150")
+        if is_peptide:
+            lengths_prompt_default = "8 25"
+            lengths_input = _input_with_default("Enter peptide min and max lengths (8-30) separated by space or comma (default 8 25):", lengths_prompt_default)
+        else:
+            lengths_prompt_default = "65 150"
+            lengths_input = _input_with_default("Enter miniprotein min and max lengths separated by space or comma (min>=31, default 65 150):", lengths_prompt_default)
         try:
             normalized = lengths_input.replace(',', ' ').split()
-            min_len_str, max_len_str = normalized[0], normalized[1]
-            lengths = [int(min_len_str), int(max_len_str)]
+            min_len_val, max_len_val = int(normalized[0]), int(normalized[1])
         except Exception:
-            print("Invalid lengths; using default 65 150.")
-            lengths = [65, 150]
+            if is_peptide:
+                min_len_val, max_len_val = 8, 25
+            else:
+                min_len_val, max_len_val = 65, 150
+        if is_peptide:
+            # Clamp within [8,30]
+            min_len_val = max(8, min(min_len_val, 30))
+            max_len_val = max(8, min(max_len_val, 30))
+            if min_len_val > max_len_val:
+                min_len_val, max_len_val = max_len_val, min_len_val
+        else:
+            # Enforce min >= 31; ensure order
+            if min_len_val < 31:
+                min_len_val = 31
+            if max_len_val < min_len_val:
+                max_len_val = min_len_val
+        lengths = [min_len_val, max_len_val]
 
         num_designs_str = _input_with_default("Enter number of final designs (default 100):", "100")
         try:
@@ -170,60 +197,70 @@ def _prompt_interactive_and_prepare_args(args):
 
         # List choices
         print("\nAvailable filter settings:")
-        filter_choices = _list_json_choices(filters_dir)
-        for i, (name, _) in enumerate(filter_choices, 1):
+        filter_choices_all = _list_json_choices(filters_dir)
+        name_to_filter = {name: path for name, path in filter_choices_all}
+        if is_peptide:
+            filter_order = ['peptide_filters', 'peptide_relaxed_filters', 'no_filters']
+            default_filter_name = 'peptide_filters'
+        else:
+            filter_order = ['default_filters', 'relaxed_filters', 'no_filters']
+            default_filter_name = 'default_filters'
+        ordered_filters = [(name, name_to_filter[name]) for name in filter_order if name in name_to_filter]
+        for i, (name, _) in enumerate(ordered_filters, 1):
             print(f"{i}. {name}")
-        filter_idx = _input_with_default("Choose filter (press Enter for default_filters):", "")
+        filter_idx = _input_with_default(f"Choose filter (press Enter for {default_filter_name}):", "")
         if filter_idx:
             try:
                 filter_idx_int = int(filter_idx)
-                selected_filter = filter_choices[filter_idx_int - 1][1]
+                selected_filter = ordered_filters[filter_idx_int - 1][1]
             except Exception:
-                selected_filter = os.path.join(filters_dir, 'default_filters.json')
+                selected_filter = name_to_filter.get(default_filter_name, os.path.join(filters_dir, f"{default_filter_name}.json"))
         else:
-            selected_filter = os.path.join(filters_dir, 'default_filters.json')
+            selected_filter = name_to_filter.get(default_filter_name, os.path.join(filters_dir, f"{default_filter_name}.json"))
 
         print("\nAvailable advanced settings:")
         advanced_choices_all = _list_json_choices(advanced_dir)
-        # Reorder according to requested preference
-        desired_order = [
-            'default_4stage_multimer',
-            'default_4stage_multimer_mpnn',
-            'default_4stage_multimer_flexible',
-            'default_4stage_multimer_hardtarget',
-            'default_4stage_multimer_flexible_hardtarget',
-            'default_4stage_multimer_mpnn_flexible',
-            'default_4stage_multimer_mpnn_hardtarget',
-            'default_4stage_multimer_mpnn_flexible_hardtarget',
-            'betasheet_4stage_multimer',
-            'betasheet_4stage_multimer_mpnn',
-            'betasheet_4stage_multimer_flexible',
-            'betasheet_4stage_multimer_hardtarget',
-            'betasheet_4stage_multimer_flexible_hardtarget',
-            'betasheet_4stage_multimer_mpnn_flexible',
-            'betasheet_4stage_multimer_mpnn_hardtarget',
-            'betasheet_4stage_multimer_mpnn_flexible_hardtarget',
-            'peptide_3stage_multimer',
-            'peptide_3stage_multimer_mpnn',
-            'peptide_3stage_multimer_flexible',
-            'peptide_3stage_multimer_mpnn_flexible'
-        ]
-        name_to_path = {name: path for name, path in advanced_choices_all}
-        ordered_adv = [(name, name_to_path[name]) for name in desired_order if name in name_to_path]
-        # Append any remaining choices not in desired list
-        remaining = [(name, path) for name, path in advanced_choices_all if name not in name_to_path or name not in desired_order]
-        ordered_adv.extend(sorted(remaining, key=lambda x: x[0]))
+        name_to_adv = {name: path for name, path in advanced_choices_all}
+        if is_peptide:
+            adv_order = [
+                'peptide_3stage_multimer',
+                'peptide_3stage_multimer_mpnn',
+                'peptide_3stage_multimer_flexible',
+                'peptide_3stage_multimer_mpnn_flexible'
+            ]
+            default_adv_name = 'peptide_3stage_multimer'
+        else:
+            adv_order = [
+                'default_4stage_multimer',
+                'default_4stage_multimer_mpnn',
+                'default_4stage_multimer_flexible',
+                'default_4stage_multimer_hardtarget',
+                'default_4stage_multimer_flexible_hardtarget',
+                'default_4stage_multimer_mpnn_flexible',
+                'default_4stage_multimer_mpnn_hardtarget',
+                'default_4stage_multimer_mpnn_flexible_hardtarget',
+                'betasheet_4stage_multimer',
+                'betasheet_4stage_multimer_mpnn',
+                'betasheet_4stage_multimer_flexible',
+                'betasheet_4stage_multimer_hardtarget',
+                'betasheet_4stage_multimer_flexible_hardtarget',
+                'betasheet_4stage_multimer_mpnn_flexible',
+                'betasheet_4stage_multimer_mpnn_hardtarget',
+                'betasheet_4stage_multimer_mpnn_flexible_hardtarget'
+            ]
+            default_adv_name = 'default_4stage_multimer'
+        ordered_adv = [(name, name_to_adv[name]) for name in adv_order if name in name_to_adv]
         for i, (name, _) in enumerate(ordered_adv, 1):
             print(f"{i}. {name}")
-        advanced_idx = _input_with_default("Choose advanced (press Enter for default_4stage_multimer):", "")
+        advanced_idx = _input_with_default(f"Choose advanced (press Enter for {default_adv_name}):", "")
         if advanced_idx:
             try:
                 advanced_idx_int = int(advanced_idx)
                 selected_advanced = ordered_adv[advanced_idx_int - 1][1]
             except Exception:
-                selected_advanced = os.path.join(advanced_dir, 'default_4stage_multimer.json')
+                selected_advanced = name_to_adv.get(default_adv_name, os.path.join(advanced_dir, f"{default_adv_name}.json"))
         else:
-            selected_advanced = os.path.join(advanced_dir, 'default_4stage_multimer.json')
+            selected_advanced = name_to_adv.get(default_adv_name, os.path.join(advanced_dir, f"{default_adv_name}.json"))
 
         # Toggles
         verbose = _yes_no("Enable verbose output?", default_yes=False)
@@ -247,6 +284,7 @@ def _prompt_interactive_and_prepare_args(args):
         print(f"Chains: {chains}")
         print(f"Hotspots: {hotspots if hotspots else 'None'}")
         print(f"Length Range: {lengths}")
+        print(f"Design Type: {'Peptide' if is_peptide else 'Miniprotein'}")
         print(f"Number of Final Designs: {num_designs}")
         print(f"Filter Setting: {os.path.splitext(os.path.basename(selected_filter))[0]}")
         print(f"Advanced Setting: {os.path.splitext(os.path.basename(selected_advanced))[0]}")
