@@ -10,7 +10,6 @@ import logging
 import os
 import sys
 import subprocess
-import shlex
 try:
     import resource  # POSIX-only; used to raise RLIMIT_NOFILE (ulimit -n)
 except Exception:
@@ -122,6 +121,13 @@ def _prompt_interactive_and_prepare_args(args):
     advanced_dir = os.path.join(base_dir, 'settings_advanced')
 
     print("\nBindCraft Interactive Setup\n")
+    # Container plan state shared across confirmation
+    container_plan = {
+        "use": False,
+        "image": None,
+        "gpu_idx": None
+    }
+
     while True:
         # Required inputs
         project_name = _input_with_default("Enter project/binder name:", None)
@@ -225,6 +231,14 @@ def _prompt_interactive_and_prepare_args(args):
         animations_on = _yes_no("Enable saving animations?", default_yes=True)
         run_with_pyrosetta = _yes_no("Run with PyRosetta?", default_yes=True)
 
+        # Container selection BEFORE final confirmation
+        container_plan = {k: None for k in container_plan}  # reset plan
+        container_plan["use"] = _yes_no("Run using a Docker container?", default_yes=False)
+        if container_plan["use"]:
+            # Launch new container from image only
+            container_plan["image"] = _input_with_default("Docker image to use (default bindcraft:latest):", "bindcraft:latest")
+            container_plan["gpu_idx"] = _input_with_default("GPU index to expose (default 0):", "0")
+
         # Summary for confirmation
         print("\nConfiguration Summary:")
         print(f"Project Name: {project_name}")
@@ -240,6 +254,10 @@ def _prompt_interactive_and_prepare_args(args):
         print(f"Plots: {'On' if plots_on else 'Off'}")
         print(f"Animations: {'On' if animations_on else 'Off'}")
         print(f"PyRosetta: {'On' if run_with_pyrosetta else 'Off'}")
+        if container_plan["use"]:
+            print(f"Docker: Yes (launch new container) -> image={container_plan['image']} gpu={container_plan['gpu_idx']}")
+        else:
+            print("Docker: No")
 
         if _yes_no("Proceed with these settings?", default_yes=True):
             break
@@ -276,72 +294,11 @@ def _prompt_interactive_and_prepare_args(args):
     args.no_animations = (not animations_on)
     args.no_pyrosetta = (not run_with_pyrosetta)
 
-    # Optional container run
-    use_container = _yes_no("Run using a Docker container?", default_yes=False)
-    if use_container:
-        # Attempt to show running containers
-        try:
-            result = subprocess.run(["docker", "ps", "--format", "{{.ID}}\t{{.Image}}\t{{.Names}}"], capture_output=True, text=True)
-            lines = [ln for ln in result.stdout.strip().splitlines() if ln.strip()]
-        except Exception:
-            lines = []
+    # Execute container plan if selected
+    if container_plan["use"] and container_plan["image"]:
+        docker_image = container_plan["image"]
+        gpu_idx = container_plan["gpu_idx"] or "0"
 
-        if lines:
-            print("\nRunning containers:")
-            for idx, ln in enumerate(lines, 1):
-                print(f"{idx}. {ln}")
-            choice = _input_with_default("Select a running container by number, or press Enter to launch a new one:", "")
-        else:
-            print("No running containers found.")
-            choice = ""
-
-        if choice:
-            try:
-                sel_idx = int(choice)
-                selected_line = lines[sel_idx - 1]
-            except Exception:
-                selected_line = None
-            if selected_line:
-                container_id = selected_line.split('\t')[0]
-                # Try to ensure output dir exists in container
-                try:
-                    subprocess.run(["docker", "exec", container_id, "mkdir", "-p", output_dir], check=False)
-                except Exception:
-                    pass
-                # Copy settings JSON into container at same path
-                try:
-                    subprocess.run(["docker", "cp", settings_path_out, f"{container_id}:{settings_path_out}"], check=True)
-                except Exception as e:
-                    print(f"Failed to copy settings JSON into container: {e}")
-                    sys.exit(1)
-                # Validate PDB exists inside container; if not, warn user
-                try:
-                    rc = subprocess.run(["docker", "exec", container_id, "bash", "-lc", f"test -f {shlex.quote(pdb_path)}"], check=False)
-                    if rc.returncode != 0:
-                        print(f"Warning: PDB '{pdb_path}' not found inside container {container_id}. Ensure the path is valid inside the container.")
-                except Exception:
-                    pass
-                # Build exec command
-                cmd = ["docker", "exec", "-it", container_id, "python", "bindcraft.py",
-                       "-s", settings_path_out, "-f", args.filters, "-a", args.advanced]
-                if args.no_pyrosetta:
-                    cmd.append("--no-pyrosetta")
-                if args.verbose:
-                    cmd.append("--verbose")
-                if args.no_plots:
-                    cmd.append("--no-plots")
-                if args.no_animations:
-                    cmd.append("--no-animations")
-                # Run inside container and exit host process
-                subprocess.run(cmd, check=False)
-                sys.exit(0)
-
-        # Launch a new container with mounts (default image bindcraft:latest)
-        docker_image = _input_with_default("Docker image to use (default bindcraft:latest):", "bindcraft:latest")
-        # Choose single GPU
-        gpu_idx = _input_with_default("GPU index to expose (default 0):", "0")
-
-        # Compute mounts so host paths work unchanged
         mounts = []
         cwd = os.getcwd()
         mounts.append((cwd, cwd))
@@ -366,7 +323,6 @@ def _prompt_interactive_and_prepare_args(args):
             docker_cmd.append("--no-plots")
         if args.no_animations:
             docker_cmd.append("--no-animations")
-
         subprocess.run(docker_cmd, check=False)
         sys.exit(0)
 
