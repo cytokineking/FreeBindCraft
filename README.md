@@ -49,6 +49,8 @@ For the motivation behind the PyRosetta bypass, implementation details (OpenMM r
     bash install_bindcraft.sh --cuda '12.4' --pkg_manager 'conda'
     ```
 
+You can also run BindCraft entirely inside a Docker container without a local installation. See the Containerized usage section below for details and an interactive wrapper.
+
 ## Running BindCraft
 
 Activate the Conda environment:
@@ -228,6 +230,23 @@ docker run --gpus all --rm -it \
 Notes:
 - Always mount your output directory to the path set as `design_path` in your target settings (e.g., `/root/software/pdl1`).
 - Always increase file descriptor limits with `--ulimit nofile=65536:65536`. The image’s entrypoint also attempts to raise the soft limit inside the container.
+
+### Interactive wrapper for Docker (works with Options A and B)
+
+After you build (Option A) or pull (Option B) an image, you can use the interactive Docker wrapper:
+
+```bash
+python docker_cli.py
+```
+
+This wizard:
+- Lists local Docker images and lets you choose one (defaults to `freebindcraft:latest` if present, or enter another image name such as `cytokineking/freebindcraft-no-pyrosetta:latest`)
+- Asks for a single GPU index to expose
+- Prompts for all inputs identical to the local interactive CLI (design type, validated PDB path, output directory auto-created, chains, hotspots, peptide/miniprotein-specific filters and advanced profiles, verbose/plots/animations, PyRosetta)
+- Writes a target settings JSON into your chosen output directory
+- Launches `docker run --rm -it --gpus device=<idx>` with host paths mounted to identical locations in the container so your paths work unchanged
+
+On completion or Ctrl+C, the container exits and is auto-removed; outputs persist on the host via the mounted output directory.
 
 ## Citations & External Tools
 
