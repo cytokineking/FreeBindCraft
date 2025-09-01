@@ -132,8 +132,14 @@ Run FreeBindCraft in a GPU-enabled Docker container (either build locally or pul
 
 ### Option A: Build the image from this repository
 
+Build without PyRosetta (default):
 ```bash
 docker build -t freebindcraft:gpu .
+```
+
+Build with PyRosetta:
+```bash
+docker build --build-arg WITH_PYROSETTA=true -t freebindcraft:pyrosetta .
 ```
 
 Sanity test (OpenMM relax):
@@ -146,10 +152,9 @@ docker run --gpus all --rm -it \
   python extras/test_openmm_relax.py example/PDL1.pdb /work/out/relax_test
 ```
 
-### Option B: Pull the prebuilt image from Docker Hub
+### Option B: Pull the prebuilt image from Docker Hub (Only No-Pyrosetta Version)
 
 - Image: `cytokineking/freebindcraft-no-pyrosetta:latest`
-- Digest: `sha256:352d0707e1d87ae24e18b2dfc555645ae00dd806f43a5099aa2d9ee79981efc5`
 
 ```bash
 docker pull cytokineking/freebindcraft-no-pyrosetta:latest
