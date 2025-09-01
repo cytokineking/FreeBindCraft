@@ -56,8 +56,12 @@ RUN chmod +x /app/functions/dssp || true && \
 
 # Build environment and download AF2 weights without PyRosetta
 # Match CUDA to base image; installer pins jax/jaxlib=0.6.0
+# Allow toggling PyRosetta install at build-time
+ARG WITH_PYROSETTA=false
+ENV WITH_PYROSETTA=${WITH_PYROSETTA}
 RUN bash -lc 'source ${CONDA_DIR}/etc/profile.d/conda.sh && \
-    bash /app/install_bindcraft.sh --pkg_manager conda --cuda 12.1 --no-pyrosetta'
+    EXTRA=""; if [ "${WITH_PYROSETTA}" != "true" ]; then EXTRA="--no-pyrosetta"; fi; \
+    bash /app/install_bindcraft.sh --pkg_manager conda --cuda 12.1 ${EXTRA}'
 
 # Default environment
 ENV PATH=${CONDA_DIR}/envs/BindCraft/bin:${CONDA_DIR}/bin:${PATH} \

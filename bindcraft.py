@@ -7,6 +7,9 @@ from functions import *
 from functions.generic_utils import insert_data # Explicit import for insert_data
 from functions.biopython_utils import clear_dssp_cache # Explicit import for DSSP cache management
 import logging
+import os
+import sys
+import subprocess
 try:
     import resource  # POSIX-only; used to raise RLIMIT_NOFILE (ulimit -n)
 except Exception:
@@ -31,8 +34,7 @@ def _bump_open_files_limit(min_soft=65536):
 # Raise file descriptor soft limit early to avoid 'Too many open files'
 _bump_open_files_limit(min_soft=65536)
 
-# Check if JAX-capable GPU is available, otherwise exit
-check_jax_gpu()
+# Defer GPU availability check until after CLI/interactive handling
 
 def ensure_binaries_executable(use_pyrosetta=True):
     """Ensure all required binaries in functions/ are executable."""
@@ -63,11 +65,11 @@ def ensure_binaries_executable(use_pyrosetta=True):
 ensure_binaries_executable()
 
 ######################################
-### parse input paths
+### parse input paths and interactive mode
 parser = argparse.ArgumentParser(description='Script to run BindCraft binder design.')
 
-parser.add_argument('--settings', '-s', type=str, required=True,
-                    help='Path to the basic settings.json file. Required.')
+parser.add_argument('--settings', '-s', type=str, required=False,
+                    help='Path to the basic settings.json file. If omitted in a TTY, interactive mode is used.')
 parser.add_argument('--filters', '-f', type=str, default='./settings_filters/default_filters.json',
                     help='Path to the filters.json file used to filter design. If not provided, default will be used.')
 parser.add_argument('--advanced', '-a', type=str, default='./settings_advanced/default_4stage_multimer.json',
@@ -80,8 +82,333 @@ parser.add_argument('--no-plots', action='store_true',
                     help='Disable saving design trajectory plots (overrides advanced settings)')
 parser.add_argument('--no-animations', action='store_true',
                     help='Disable saving design animations (overrides advanced settings)')
+parser.add_argument('--interactive', action='store_true',
+                    help='Force interactive mode to collect target settings and options')
 
 args = parser.parse_args()
+
+def _isatty_stdin():
+    try:
+        return sys.stdin.isatty()
+    except Exception:
+        return False
+
+def _input_with_default(prompt_text, default_value=None):
+    if default_value is None:
+        return input(prompt_text).strip()
+    resp = input(f"{prompt_text} ").strip()
+    return resp if resp else default_value
+
+def _yes_no(prompt_text, default_yes=False):
+    default_hint = 'Y/n' if default_yes else 'y/N'
+    resp = input(f"{prompt_text} ({default_hint}): ").strip().lower()
+    if resp == '':
+        return default_yes
+    return resp in ('y', 'yes')
+
+def _list_json_choices(folder_path):
+    try:
+        entries = [f for f in os.listdir(folder_path) if f.endswith('.json') and not f.startswith('.')]
+    except Exception:
+        entries = []
+    entries.sort()
+    # return list of (display_name_without_ext, abspath)
+    return [(os.path.splitext(f)[0], os.path.join(folder_path, f)) for f in entries]
+
+def _prompt_interactive_and_prepare_args(args):
+    base_dir = os.path.dirname(os.path.realpath(__file__))
+    filters_dir = os.path.join(base_dir, 'settings_filters')
+    advanced_dir = os.path.join(base_dir, 'settings_advanced')
+
+    print("\nBindCraft Interactive Setup\n")
+    # Container plan state shared across confirmation
+    container_plan = {
+        "use": False,
+        "image": None,
+        "gpu_idx": None
+    }
+
+    while True:
+        # Design type selection
+        print("Design type:")
+        print("1. Miniprotein (31+ aa)")
+        print("2. Peptide (8-30 aa)")
+        dtype_choice = _input_with_default("Choose design type (press Enter for Miniprotein):", "")
+        is_peptide = (dtype_choice.strip() == '2')
+
+        # Required inputs
+        project_name = _input_with_default("Enter project/binder name:", None)
+        while not project_name:
+            print("Project name is required.")
+            project_name = _input_with_default("Enter project/binder name:", None)
+
+        # Require a valid existing PDB file path; re-prompt until valid
+        while True:
+            pdb_raw = _input_with_default("Enter path to PDB file:", None)
+            if not pdb_raw:
+                print("PDB path is required.")
+                continue
+            candidate = os.path.abspath(os.path.expanduser(pdb_raw))
+            if os.path.isfile(candidate):
+                pdb_path = candidate
+                break
+            print(f"Error: No PDB file found at '{candidate}'. Please re-enter.")
+
+        output_dir = _input_with_default("Enter output directory:", os.path.join(os.getcwd(), f"{project_name}_bindcraft_out"))
+        output_dir = os.path.abspath(os.path.expanduser(output_dir))
+        os.makedirs(output_dir, exist_ok=True)
+
+        chains = _input_with_default("Enter target chains (e.g., A or A,B):", "A")
+        hotspots = _input_with_default("Enter hotspot residue(s) for BindCraft to target. Use format: chain letter + residue numbers (e.g., 'A1,B20-25'). Leave empty for no preference:", "")
+
+        if is_peptide:
+            lengths_prompt_default = "8 25"
+            lengths_input = _input_with_default("Enter peptide min and max lengths (8-30) separated by space or comma (default 8 25):", lengths_prompt_default)
+        else:
+            lengths_prompt_default = "65 150"
+            lengths_input = _input_with_default("Enter miniprotein min and max lengths separated by space or comma (min>=31, default 65 150):", lengths_prompt_default)
+        try:
+            normalized = lengths_input.replace(',', ' ').split()
+            min_len_val, max_len_val = int(normalized[0]), int(normalized[1])
+        except Exception:
+            if is_peptide:
+                min_len_val, max_len_val = 8, 25
+            else:
+                min_len_val, max_len_val = 65, 150
+        if is_peptide:
+            # Clamp within [8,30]
+            min_len_val = max(8, min(min_len_val, 30))
+            max_len_val = max(8, min(max_len_val, 30))
+            if min_len_val > max_len_val:
+                min_len_val, max_len_val = max_len_val, min_len_val
+        else:
+            # Enforce min >= 31; ensure order
+            if min_len_val < 31:
+                min_len_val = 31
+            if max_len_val < min_len_val:
+                max_len_val = min_len_val
+        lengths = [min_len_val, max_len_val]
+
+        num_designs_str = _input_with_default("Enter number of final designs (default 100):", "100")
+        try:
+            num_designs = int(num_designs_str)
+        except Exception:
+            num_designs = 100
+
+        # List choices
+        print("\nAvailable filter settings:")
+        filter_choices_all = _list_json_choices(filters_dir)
+        name_to_filter = {name: path for name, path in filter_choices_all}
+        if is_peptide:
+            filter_order = ['peptide_filters', 'peptide_relaxed_filters', 'no_filters']
+            default_filter_name = 'peptide_filters'
+        else:
+            filter_order = ['default_filters', 'relaxed_filters', 'no_filters']
+            default_filter_name = 'default_filters'
+        ordered_filters = [(name, name_to_filter[name]) for name in filter_order if name in name_to_filter]
+        for i, (name, _) in enumerate(ordered_filters, 1):
+            print(f"{i}. {name}")
+        filter_idx = _input_with_default(f"Choose filter (press Enter for {default_filter_name}):", "")
+        if filter_idx:
+            try:
+                filter_idx_int = int(filter_idx)
+                selected_filter = ordered_filters[filter_idx_int - 1][1]
+            except Exception:
+                selected_filter = name_to_filter.get(default_filter_name, os.path.join(filters_dir, f"{default_filter_name}.json"))
+        else:
+            selected_filter = name_to_filter.get(default_filter_name, os.path.join(filters_dir, f"{default_filter_name}.json"))
+
+        print("\nAvailable advanced settings:")
+        advanced_choices_all = _list_json_choices(advanced_dir)
+        name_to_adv = {name: path for name, path in advanced_choices_all}
+        if is_peptide:
+            adv_order = [
+                'peptide_3stage_multimer',
+                'peptide_3stage_multimer_mpnn',
+                'peptide_3stage_multimer_flexible',
+                'peptide_3stage_multimer_mpnn_flexible'
+            ]
+            default_adv_name = 'peptide_3stage_multimer'
+        else:
+            adv_order = [
+                'default_4stage_multimer',
+                'default_4stage_multimer_mpnn',
+                'default_4stage_multimer_flexible',
+                'default_4stage_multimer_hardtarget',
+                'default_4stage_multimer_flexible_hardtarget',
+                'default_4stage_multimer_mpnn_flexible',
+                'default_4stage_multimer_mpnn_hardtarget',
+                'default_4stage_multimer_mpnn_flexible_hardtarget',
+                'betasheet_4stage_multimer',
+                'betasheet_4stage_multimer_mpnn',
+                'betasheet_4stage_multimer_flexible',
+                'betasheet_4stage_multimer_hardtarget',
+                'betasheet_4stage_multimer_flexible_hardtarget',
+                'betasheet_4stage_multimer_mpnn_flexible',
+                'betasheet_4stage_multimer_mpnn_hardtarget',
+                'betasheet_4stage_multimer_mpnn_flexible_hardtarget'
+            ]
+            default_adv_name = 'default_4stage_multimer'
+        ordered_adv = [(name, name_to_adv[name]) for name in adv_order if name in name_to_adv]
+        for i, (name, _) in enumerate(ordered_adv, 1):
+            print(f"{i}. {name}")
+        advanced_idx = _input_with_default(f"Choose advanced (press Enter for {default_adv_name}):", "")
+        if advanced_idx:
+            try:
+                advanced_idx_int = int(advanced_idx)
+                selected_advanced = ordered_adv[advanced_idx_int - 1][1]
+            except Exception:
+                selected_advanced = name_to_adv.get(default_adv_name, os.path.join(advanced_dir, f"{default_adv_name}.json"))
+        else:
+            selected_advanced = name_to_adv.get(default_adv_name, os.path.join(advanced_dir, f"{default_adv_name}.json"))
+
+        # Toggles
+        verbose = _yes_no("Enable verbose output?", default_yes=False)
+        plots_on = _yes_no("Enable saving plots?", default_yes=True)
+        animations_on = _yes_no("Enable saving animations?", default_yes=True)
+        run_with_pyrosetta = _yes_no("Run with PyRosetta?", default_yes=True)
+
+        # Container selection BEFORE final confirmation
+        container_plan = {k: None for k in container_plan}  # reset plan
+        container_plan["use"] = _yes_no("Run using a Docker container?", default_yes=False)
+        if container_plan["use"]:
+            # Launch new container from image only
+            # Try to enumerate local images for convenience
+            images_list = []
+            try:
+                img_proc = subprocess.run(["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"], capture_output=True, text=True)
+                for ln in img_proc.stdout.strip().splitlines():
+                    name = ln.strip()
+                    if not name or name == "<none>:<none>":
+                        continue
+                    images_list.append(name)
+                # Deduplicate while preserving order
+                seen = set()
+                images_list = [x for x in images_list if not (x in seen or seen.add(x))]
+            except Exception:
+                images_list = []
+
+            selected_image = None
+            if images_list:
+                print("\nLocal Docker images:")
+                for idx, name in enumerate(images_list, 1):
+                    print(f"{idx}. {name}")
+                print("0. Enter image name manually")
+                choice = _input_with_default("Choose image (press Enter for freebindcraft:latest):", "")
+                if not choice:
+                    selected_image = "freebindcraft:latest"
+                else:
+                    try:
+                        cidx = int(choice)
+                        if cidx == 0:
+                            selected_image = None
+                        elif 1 <= cidx <= len(images_list):
+                            selected_image = images_list[cidx - 1]
+                    except Exception:
+                        selected_image = None
+            if not selected_image:
+                selected_image = _input_with_default("Docker image to use (default freebindcraft:latest):", "freebindcraft:latest")
+
+            container_plan["image"] = selected_image
+            container_plan["gpu_idx"] = _input_with_default("GPU index to expose (default 0):", "0")
+
+        # Summary for confirmation
+        print("\nConfiguration Summary:")
+        print(f"Project Name: {project_name}")
+        print(f"PDB File: {pdb_path}")
+        print(f"Output Directory: {output_dir}")
+        print(f"Chains: {chains}")
+        print(f"Hotspots: {hotspots if hotspots else 'None'}")
+        print(f"Length Range: {lengths}")
+        print(f"Design Type: {'Peptide' if is_peptide else 'Miniprotein'}")
+        print(f"Number of Final Designs: {num_designs}")
+        print(f"Filter Setting: {os.path.splitext(os.path.basename(selected_filter))[0]}")
+        print(f"Advanced Setting: {os.path.splitext(os.path.basename(selected_advanced))[0]}")
+        print(f"Verbose: {'Yes' if verbose else 'No'}")
+        print(f"Plots: {'On' if plots_on else 'Off'}")
+        print(f"Animations: {'On' if animations_on else 'Off'}")
+        print(f"PyRosetta: {'On' if run_with_pyrosetta else 'Off'}")
+        if container_plan["use"]:
+            print(f"Docker: Yes (launch new container) -> image={container_plan['image']} gpu={container_plan['gpu_idx']}")
+        else:
+            print("Docker: No")
+
+        if _yes_no("Proceed with these settings?", default_yes=True):
+            break
+        else:
+            print("Let's re-enter the details.\n")
+
+    # Prepare target settings JSON
+    target_settings = {
+        "design_path": output_dir,
+        "binder_name": project_name,
+        "starting_pdb": pdb_path,
+        "chains": chains,
+        "target_hotspot_residues": hotspots,
+        "lengths": lengths,
+        "number_of_final_designs": num_designs
+    }
+
+    timestamp = time.strftime('%Y%m%d_%H%M%S')
+    settings_filename = f"interactive_{project_name}_{timestamp}.json"
+    settings_path_out = os.path.join(output_dir, settings_filename)
+    try:
+        with open(settings_path_out, 'w') as f:
+            json.dump(target_settings, f, indent=2)
+    except Exception as e:
+        print(f"Error writing settings JSON: {e}")
+        sys.exit(1)
+
+    # Map to args
+    args.settings = settings_path_out
+    args.filters = selected_filter
+    args.advanced = selected_advanced
+    args.verbose = verbose
+    args.no_plots = (not plots_on)
+    args.no_animations = (not animations_on)
+    args.no_pyrosetta = (not run_with_pyrosetta)
+
+    # Execute container plan if selected
+    if container_plan["use"] and container_plan["image"]:
+        docker_image = container_plan["image"]
+        gpu_idx = container_plan["gpu_idx"] or "0"
+
+        mounts = []
+        cwd = os.getcwd()
+        mounts.append((cwd, cwd))
+        pdb_parent = os.path.dirname(pdb_path)
+        if pdb_parent and os.path.abspath(pdb_parent) != cwd:
+            mounts.append((pdb_parent, pdb_parent))
+        mounts.append((output_dir, output_dir))
+
+        docker_cmd = [
+            "docker", "run", "--rm", "-it",
+            "--gpus", f"device={gpu_idx}",
+        ]
+        for host, cont in mounts:
+            docker_cmd.extend(["-v", f"{host}:{cont}"])
+        docker_cmd.extend(["-w", cwd, docker_image, "python", "bindcraft.py",
+                           "-s", args.settings, "-f", args.filters, "-a", args.advanced])
+        if args.no_pyrosetta:
+            docker_cmd.append("--no-pyrosetta")
+        if args.verbose:
+            docker_cmd.append("--verbose")
+        if args.no_plots:
+            docker_cmd.append("--no-plots")
+        if args.no_animations:
+            docker_cmd.append("--no-animations")
+        subprocess.run(docker_cmd, check=False)
+        sys.exit(0)
+
+    return args
+
+# Enter interactive mode if requested or if no settings were provided in a TTY
+if args.interactive or (not args.settings and _isatty_stdin()):
+    args = _prompt_interactive_and_prepare_args(args)
+elif not args.settings and not _isatty_stdin():
+    # No TTY and no settings -> cannot prompt
+    print("Error: --settings is required in non-interactive environments.")
+    sys.exit(1)
 
 # perform checks of input setting files
 settings_path, filters_path, advanced_path = perform_input_check(args)
@@ -101,6 +428,9 @@ for noisy_logger in (
 if args.verbose:
     logging.getLogger("functions").setLevel(logging.DEBUG)
     logging.getLogger("bindcraft").setLevel(logging.DEBUG)
+
+# Check if JAX-capable GPU is available, otherwise exit (after interactive/container handling)
+check_jax_gpu()
 
 ### load settings from JSON
 target_settings, advanced_settings, filters = load_json_settings(settings_path, filters_path, advanced_path)
