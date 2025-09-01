@@ -273,7 +273,43 @@ def _prompt_interactive_and_prepare_args(args):
         container_plan["use"] = _yes_no("Run using a Docker container?", default_yes=False)
         if container_plan["use"]:
             # Launch new container from image only
-            container_plan["image"] = _input_with_default("Docker image to use (default bindcraft:latest):", "bindcraft:latest")
+            # Try to enumerate local images for convenience
+            images_list = []
+            try:
+                img_proc = subprocess.run(["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"], capture_output=True, text=True)
+                for ln in img_proc.stdout.strip().splitlines():
+                    name = ln.strip()
+                    if not name or name == "<none>:<none>":
+                        continue
+                    images_list.append(name)
+                # Deduplicate while preserving order
+                seen = set()
+                images_list = [x for x in images_list if not (x in seen or seen.add(x))]
+            except Exception:
+                images_list = []
+
+            selected_image = None
+            if images_list:
+                print("\nLocal Docker images:")
+                for idx, name in enumerate(images_list, 1):
+                    print(f"{idx}. {name}")
+                print("0. Enter image name manually")
+                choice = _input_with_default("Choose image (press Enter for freebindcraft:latest):", "")
+                if not choice:
+                    selected_image = "freebindcraft:latest"
+                else:
+                    try:
+                        cidx = int(choice)
+                        if cidx == 0:
+                            selected_image = None
+                        elif 1 <= cidx <= len(images_list):
+                            selected_image = images_list[cidx - 1]
+                    except Exception:
+                        selected_image = None
+            if not selected_image:
+                selected_image = _input_with_default("Docker image to use (default freebindcraft:latest):", "freebindcraft:latest")
+
+            container_plan["image"] = selected_image
             container_plan["gpu_idx"] = _input_with_default("GPU index to expose (default 0):", "0")
 
         # Summary for confirmation

@@ -75,6 +75,27 @@ python -u ./bindcraft.py --settings './settings_target/your_target.json' --filte
 
 For details on configuring target settings (`--settings`), filters (`--filters`), advanced parameters (`--advanced`), and other operational aspects of BindCraft, please consult the documentation in the [original BindCraft repository](https://github.com/martinpacesa/BindCraft).
 
+## Interactive CLI
+
+If you run BindCraft without `--settings` in a terminal (TTY) or pass `--interactive`, an interactive setup wizard guides you through configuration.
+
+- Quickstart (local):
+  ```bash
+  python bindcraft.py               # auto-detects TTY and enters interactive mode
+  # or
+  python bindcraft.py --interactive
+  ```
+- What it asks:
+  - Project/binder name, input PDB path (validated must exist), output directory (auto-created)
+  - Design type: Miniprotein (≥31 aa) or Peptide (8–30 aa)
+    - Peptides: default length 8–25; filters limited to `peptide_filters`, `peptide_relaxed_filters`, `no_filters`; advanced limited to peptide profiles
+    - Miniproteins: default length 65–150 (min ≥31); filters limited to `default_filters`, `relaxed_filters`, `no_filters`; advanced excludes peptide profiles
+  - Verbose logging, plots, animations, and whether to run with PyRosetta
+  - Optional: launch inside Docker by selecting an image and a single GPU index
+- Behavior:
+  - Generates a target settings JSON inside your chosen output directory and then runs the standard pipeline
+  - When launching Docker from the wizard, the same host paths are mounted into the container and only one GPU is exposed
+
 ## Additional New CLI Flags 
 
 You can further control runtime behavior with these flags:
