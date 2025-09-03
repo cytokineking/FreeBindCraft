@@ -1065,7 +1065,7 @@ def openmm_relax_subprocess(pdb_file_path, output_pdb_path, use_gpu_relax=True, 
             [sys.executable, "-c", py_code], timeout=timeout, capture_output=True, text=True
         )
 
-        # Forward child output to parent streams to preserve visibility
+        # Forward child output to parent streams to preserve visibility, but filter stderr
         if proc.stdout:
             try:
                 sys.stdout.write(proc.stdout)
@@ -1073,7 +1073,9 @@ def openmm_relax_subprocess(pdb_file_path, output_pdb_path, use_gpu_relax=True, 
                 pass
         if proc.stderr:
             try:
-                sys.stderr.write(proc.stderr)
+                for line in proc.stderr.splitlines(True):  # Preserve newlines
+                    if "Failed to read file: /tmp/dep-" not in line:
+                        sys.stderr.write(line)
             except Exception:
                 pass
 
