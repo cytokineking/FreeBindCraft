@@ -268,3 +268,21 @@ This repository includes additional scripts and documents in `extras/` to assist
 - `extras/test_openmm_relax.py`: Quick test harness for OpenMM and PyRosetta relax routines.
 
 See `extras/README.md` for detailed usage examples and options.
+
+## Contributing
+
+Pull requests are welcome.
+
+## Known Issues
+
+- OpenMM GPU backend selection (OpenCL preferred over CUDA): We deliberately prefer OpenCL over CUDA for OpenMM relax because we have not been able to get the CUDA backend reliably working in our environments. OpenCL works, but it is less stable over long runs, so the relax step is executed in a subprocess for isolation and reliability. It also produces JIT log spam; see the next item for a suppression example.
+- OpenCL JIT "log spam": You may see repeated lines such as "Failed to read file: /tmp/dep-76532a.d" emitted to stderr during OpenCL kernel builds. You can suppress only these specific lines by filtering stderr through grep (bash/zsh process substitution):
+  ```bash
+  python -u ./bindcraft.py \
+    --settings ./settings_target/your_target.json \
+    --filters ./settings_filters/default_filters.json \
+    --advanced ./settings_advanced/default_4stage_multimer.json \
+    --no-pyrosetta \
+    2> >(grep -v -E '^Failed to read file: .*/dep-[0-9a-fA-F]+\.d$' >&2)
+  ```
+  This redirects stderr to grep and drops only lines matching the pattern; all other stderr is preserved.
