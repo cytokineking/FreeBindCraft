@@ -23,7 +23,7 @@ The `--no-pyrosetta` flag, usable during both installation and runtime, enables 
 
 For the motivation behind the PyRosetta bypass, implementation details (OpenMM relax, FreeSASA/Biopython SASA, `sc-rs` shape complementarity), and empirical impact on filter decisions, see the in-depth technical overview:
 
-- `extras/FreeBindCraft_Technical_Overview.md`
+- `technical_overview/FreeBindCraft_Technical_Overview.md`
 
 ## Installation
 

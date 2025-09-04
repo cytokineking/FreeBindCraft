@@ -69,7 +69,6 @@ This folder contains accessory scripts and documents to support BindCraft runs, 
 - The scripts assume the repository root is importable; they update `sys.path` at runtime from within `extras/`.
 - Some utilities expect executables in `functions/` (e.g., `dssp`, optional `DAlphaBall.gcc`, and optional `sc` from `sc-rs`). The scripts attempt to `chmod +x` these if needed.
 
-For a deeper discussion of PyRosetta bypass design choices, metric mappings, and empirical comparisons, see the technical overview: `extras/FreeBindCraft_Technical_Overview.md`.
 
 ## References
 
