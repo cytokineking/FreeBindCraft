@@ -90,7 +90,7 @@ def score_interface(pdb_file, binder_chain="B", use_pyrosetta=True):
     interface_residues_pdb_ids_str = ','.join(interface_residues_pdb_ids)
 
     # Calculate the percentage of hydrophobic residues at the interface of the binder
-    hydrophobic_aa = set('ACFILMPVWY')
+    hydrophobic_aa = set('ACFGILMPVWY')
     hydrophobic_count = sum(interface_AA[aa] for aa in hydrophobic_aa)
     if interface_nres != 0:
         interface_hydrophobicity = (hydrophobic_count / interface_nres) * 100
