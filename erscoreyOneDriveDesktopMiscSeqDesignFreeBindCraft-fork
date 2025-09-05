@@ -1,0 +1,34 @@
+[1mdiff --git a/install_bindcraft.sh b/install_bindcraft.sh[m
+[1mindex dc3b07e..626e3e3 100644[m
+[1m--- a/install_bindcraft.sh[m
+[1m+++ b/install_bindcraft.sh[m
+[36m@@ -80,12 +80,12 @@[m [mif [ "$install_pyrosetta" = true ]; then[m
+     echo -e "Installing with PyRosetta\n"[m
+     if [ -n "$cuda" ]; then[m
+         CONDA_OVERRIDE_CUDA="$cuda" $pkg_manager install \[m
+[31m-            $BASE_PACKAGES pyrosetta "jaxlib=0.6.0=*cuda*" "jax=0.6.0" cuda-nvcc cudnn \[m
+[32m+[m[32m            $BASE_PACKAGES pyrosetta "jaxlib=0.6.0=*cuda*" "jax=0.6.0" cuda-nvcc cudnn cuda-toolkit=12.6\[m
+             -c conda-forge -c nvidia -c "https://conda.rosettacommons.org" -y \[m
+             || { echo -e "Error: Failed to install conda packages with PyRosetta."; exit 1; }[m
+     else[m
+         $pkg_manager install \[m
+[31m-            $BASE_PACKAGES pyrosetta "jaxlib=0.6.0" "jax=0.6.0" cuda-nvcc cudnn \[m
+[32m+[m[32m            $BASE_PACKAGES pyrosetta "jaxlib=0.6.0" "jax=0.6.0" cuda-nvcc cudnn cuda-toolkit=12.6\[m
+             -c conda-forge -c nvidia -c "https://conda.rosettacommons.org" -y \[m
+             || { echo -e "Error: Failed to install conda packages with PyRosetta."; exit 1; }[m
+     fi[m
+[36m@@ -93,12 +93,12 @@[m [melse[m
+     echo -e "Installing without PyRosetta\n"[m
+     if [ -n "$cuda" ]; then[m
+         CONDA_OVERRIDE_CUDA="$cuda" $pkg_manager install \[m
+[31m-            $BASE_PACKAGES "jaxlib=0.6.0=*cuda*" "jax=0.6.0" cuda-nvcc cudnn \[m
+[32m+[m[32m            $BASE_PACKAGES "jaxlib=0.6.0=*cuda*" "jax=0.6.0" cuda-nvcc cudnn cuda-toolkit=12.6\[m
+             -c conda-forge -c nvidia -y \[m
+             || { echo -e "Error: Failed to install conda packages without PyRosetta."; exit 1; }[m
+     else[m
+         $pkg_manager install \[m
+[31m-            $BASE_PACKAGES "jaxlib=0.6.0" "jax=0.6.0" cuda-nvcc cudnn \[m
+[32m+[m[32m            $BASE_PACKAGES "jaxlib=0.6.0" "jax=0.6.0" cuda-nvcc cudnn cuda-toolkit=12.6\[m
+             -c conda-forge -c nvidia -y \[m
+             || { echo -e "Error: Failed to install conda packages without PyRosetta."; exit 1; }[m
+     fi[m
