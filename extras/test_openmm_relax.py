@@ -63,6 +63,10 @@ if __name__ == "__main__":
     parser.add_argument("--json-out", type=str, default=None,
                         help="Optional path to write single-run perf JSON")
 
+    # FASPR repacking toggle
+    parser.add_argument("--faspr", action="store_true",
+                        help="Run FASPR side-chain repacking after OpenMM relax (requires functions/FASPR and rotamer lib)")
+
     # Sweep controls
     parser.add_argument("--sweep-basic", action="store_true",
                         help="Run a basic grid sweep over CPU/GPU x MD on/off x ramp stages 1/2/3")
@@ -131,7 +135,7 @@ if __name__ == "__main__":
             return ["OpenCL", "CUDA"], True
         return None, True  # auto
 
-    def _run_openmm_once(tag, input_pdb, out_pdb, platform_choice, md_steps, rest_ramp, lj_ramp, max_iters, ramp_tol, final_tol, json_out_path=None):
+    def _run_openmm_once(tag, input_pdb, out_pdb, platform_choice, md_steps, rest_ramp, lj_ramp, max_iters, ramp_tol, final_tol, json_out_path=None, faspr=False):
         print(f"\n--- OpenMM Relax Run: {tag} ---")
         perf = {}
         override, use_gpu = _platform_override_from_choice(platform_choice)
@@ -149,7 +153,9 @@ if __name__ == "__main__":
                 lj_rep_base_k_kj_mol=10.0,
                 lj_rep_ramp_factors=lj_ramp,
                 perf_report=perf,
-                override_platform_order=override
+                override_platform_order=override,
+                use_faspr_repack=bool(faspr),
+                post_faspr_minimize=True
             )
             print(f"Platform: {used_platform}")
             print(f"Total seconds: {perf.get('total_seconds'):.2f}")
@@ -163,6 +169,8 @@ if __name__ == "__main__":
                     f"md_s={st['md_seconds']:.2f}, min_calls={st['min_calls']}, min_s={st['min_seconds']:.2f}, "
                     f"E0={st.get('energy_start_kj')}, Emd={st.get('md_post_energy_kj')}, Efin={st.get('final_energy_kj')}"
                 )
+            if faspr:
+                print(f"FASPR: success={perf.get('faspr_success')}, faspr_s={perf.get('faspr_seconds')}, post_min_s={perf.get('post_faspr_min_seconds')}")
             if json_out_path:
                 try:
                     os.makedirs(os.path.dirname(json_out_path), exist_ok=True) if os.path.dirname(json_out_path) else None
@@ -201,7 +209,8 @@ if __name__ == "__main__":
                         tag, args.input_pdb_path, out_pdb,
                         plat, md, rest, lj,
                         args.max_iters, args.ramp_force_tol, args.final_force_tol,
-                        json_out_path=json_out
+                        json_out_path=json_out,
+                        faspr=args.faspr
                     )
     else:
         # Single-run
@@ -218,7 +227,8 @@ if __name__ == "__main__":
             args.max_iters,
             args.ramp_force_tol,
             args.final_force_tol,
-            json_out_path=args.json_out
+            json_out_path=args.json_out,
+            faspr=args.faspr
         )
 
     # --- PyRosetta Relaxation ---

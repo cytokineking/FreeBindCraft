@@ -65,6 +65,151 @@ def _get_openmm_forcefield():
         _OPENMM_FORCEFIELD_SINGLETON = app.ForceField('amber14-all.xml', 'implicit/obc2.xml')
     return _OPENMM_FORCEFIELD_SINGLETON
 
+# --- FASPR integration helpers ---
+def _resolve_faspr_binary():
+    """Locate the FASPR binary. Search order: env FASPR_BIN → functions/FASPR → PATH.
+
+    Returns
+    -------
+    tuple[str|None, str|None]
+        (binary_path, binary_dir) or (None, None) if not found.
+    """
+    # Env override
+    env_bin = os.environ.get('FASPR_BIN')
+    if env_bin and os.path.isfile(env_bin) and os.access(env_bin, os.X_OK):
+        return env_bin, os.path.dirname(os.path.abspath(env_bin))
+
+    # Repo-provided binary
+    try:
+        module_dir = os.path.dirname(os.path.abspath(__file__))
+        candidate = os.path.join(module_dir, 'FASPR')
+        if os.path.isfile(candidate):
+            # ensure executable bit if possible
+            try:
+                if not os.access(candidate, os.X_OK):
+                    os.chmod(candidate, os.stat(candidate).st_mode | 0o755)
+            except Exception:
+                pass
+            if os.access(candidate, os.X_OK):
+                return candidate, module_dir
+    except Exception:
+        pass
+
+    # PATH lookup
+    which_faspr = shutil.which('FASPR')
+    if which_faspr and os.path.isfile(which_faspr) and os.access(which_faspr, os.X_OK):
+        return which_faspr, os.path.dirname(os.path.abspath(which_faspr))
+
+    return None, None
+
+def _run_faspr(input_pdb_path, output_pdb_path, sequence_txt_path=None, timeout=900):
+    """Run FASPR on an input PDB and write repacked output.
+
+    FASPR requires 'dun2010bbdep.bin' to be colocated with the executable. We set cwd
+    to the FASPR directory so the binary can find its rotamer library.
+
+    Returns True on success, False otherwise.
+    """
+    faspr_bin, faspr_dir = _resolve_faspr_binary()
+    if not faspr_bin or not faspr_dir:
+        print("[FASPR] WARN: FASPR binary not found; skipping repack")
+        return False
+
+    cmd = [faspr_bin, '-i', os.path.abspath(input_pdb_path), '-o', os.path.abspath(output_pdb_path)]
+    if sequence_txt_path and os.path.isfile(sequence_txt_path):
+        cmd.extend(['-s', os.path.abspath(sequence_txt_path)])
+
+    try:
+        vprint(f"[FASPR] Running: {' '.join(cmd)}")
+        proc = subprocess.run(cmd, cwd=faspr_dir, check=True, capture_output=True, text=True, timeout=timeout)
+        if proc.stdout:
+            vprint(f"[FASPR] stdout: {proc.stdout.strip()[:500]}")
+        if proc.stderr:
+            vprint(f"[FASPR] stderr: {proc.stderr.strip()[:500]}")
+        # Verify output exists and is non-empty
+        if os.path.isfile(output_pdb_path) and os.path.getsize(output_pdb_path) > 0:
+            return True
+    except subprocess.TimeoutExpired:
+        print(f"[FASPR] ERROR: Timeout running FASPR on {os.path.basename(input_pdb_path)}")
+    except subprocess.CalledProcessError as e:
+        print(f"[FASPR] ERROR: FASPR failed: rc={e.returncode} stderr={getattr(e, 'stderr', '')}")
+    except Exception as e:
+        print(f"[FASPR] ERROR: {e}")
+    return False
+
+def _add_hydrogens_and_minimize(pdb_in_path, pdb_out_path, platform_order=None,
+                                force_tolerance_kj_mol_nm=0.1, max_iterations=500):
+    """Add hydrogens with PDBFixer and run a short OpenMM minimization, then save PDB.
+
+    Returns
+    -------
+    tuple[str|None, float]
+        (platform_used, seconds)
+    """
+    t0 = time.time()
+    try:
+        fixer = PDBFixer(filename=pdb_in_path)
+        fixer.findMissingResidues()
+        fixer.findNonstandardResidues()
+        fixer.replaceNonstandardResidues()
+        fixer.removeHeterogens(keepWater=False)
+        fixer.findMissingAtoms()
+        fixer.addMissingAtoms()
+        fixer.addMissingHydrogens(7.0)
+
+        forcefield = _get_openmm_forcefield()
+        system = forcefield.createSystem(fixer.topology,
+                                         nonbondedMethod=app.CutoffNonPeriodic,
+                                         nonbondedCutoff=1.0*unit.nanometer,
+                                         constraints=app.HBonds)
+
+        integrator = openmm.LangevinMiddleIntegrator(300*unit.kelvin,
+                                                     1.0/unit.picosecond,
+                                                     0.002*unit.picoseconds)
+
+        # Platform selection
+        plat_used = None
+        props = {}
+        sim = None
+        if platform_order is None:
+            platform_order = ['OpenCL', 'CUDA', 'CPU']
+        for p_name in platform_order:
+            try:
+                platform_obj = Platform.getPlatformByName(p_name)
+                if p_name == 'CUDA':
+                    props = {'CudaPrecision': 'mixed'}
+                elif p_name == 'OpenCL':
+                    props = {'OpenCLPrecision': 'single'}
+                sim = app.Simulation(fixer.topology, system, integrator, platform_obj, props)
+                plat_used = p_name
+                break
+            except Exception:
+                sim = None
+                continue
+        if sim is None:
+            raise OpenMMException("No suitable OpenMM platform for post-FASPR minimization")
+
+        sim.context.setPositions(fixer.positions)
+        tol = force_tolerance_kj_mol_nm * unit.kilojoule_per_mole / unit.nanometer
+        sim.minimizeEnergy(tolerance=tol, maxIterations=max_iterations)
+        positions = sim.context.getState(getPositions=True).getPositions()
+        with open(pdb_out_path, 'w') as outf:
+            app.PDBFile.writeFile(sim.topology, positions, outf, keepIds=True)
+        # Cleanup
+        try:
+            del sim, integrator, system, fixer
+        except Exception:
+            pass
+        gc.collect()
+        return plat_used, (time.time() - t0)
+    except Exception as e:
+        print(f"[OpenMM-PostFASPR] WARN: Failed post-FASPR H-add/min: {e}")
+        try:
+            shutil.copy(pdb_in_path, pdb_out_path)
+        except Exception:
+            pass
+        return None, (time.time() - t0)
+
 # Removed legacy in-process OpenCL reset helper; subprocess isolation handles context teardown.
 
 # Helper function for k conversion
@@ -533,7 +678,10 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                  lj_rep_base_k_kj_mol=10.0, # Base strength for extra LJ repulsion (kJ/mol)
                  lj_rep_ramp_factors=(0.0, 1.5, 3.0), # 3-stage LJ repulsion ramp factors (soft → hard)
                  perf_report=None, # Optional dict to populate with detailed timing/energy metrics
-                 override_platform_order=None):
+                 override_platform_order=None,
+                 use_faspr_repack=False, # If True, run FASPR repack after relax
+                 post_faspr_minimize=True # If True, add H and short standardized min after FASPR
+                 ):
     """
     Relaxes a PDB structure using OpenMM with L-BFGS minimizer.
     Uses PDBFixer to prepare the structure first.
@@ -920,7 +1068,70 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
             except Exception as _:
                 pass # Keep silent on B-factor application failure
 
-        # 5. Clean the output PDB
+        # 5. Optional FASPR repacking and standardized cleanup
+        faspr_seconds = None
+        faspr_success = False
+        post_min_seconds = None
+        if use_faspr_repack:
+            try:
+                t_faspr = time.time()
+                # Prepare a temporary heavy-atom PDB for FASPR by stripping hydrogens
+                # Reuse PDBFixer to remove hydrogens to avoid FASPR backbone completeness issues.
+                tmp_dir = tempfile.mkdtemp(prefix='faspr_')
+                tmp_heavy = os.path.join(tmp_dir, 'input_heavy.pdb')
+                tmp_faspr_out = os.path.join(tmp_dir, 'faspr_out.pdb')
+
+                try:
+                    fixer_heavy = PDBFixer(filename=output_pdb_path)
+                    fixer_heavy.findMissingResidues()
+                    fixer_heavy.findNonstandardResidues()
+                    fixer_heavy.replaceNonstandardResidues()
+                    fixer_heavy.removeHeterogens(keepWater=False)
+                    fixer_heavy.findMissingAtoms()
+                    fixer_heavy.addMissingAtoms()
+                    # Intentionally DO NOT add hydrogens here; FASPR ignores sidechains but requires complete backbone
+                    with open(tmp_heavy, 'w') as ftmp:
+                        app.PDBFile.writeFile(fixer_heavy.topology, fixer_heavy.positions, ftmp, keepIds=True)
+                except Exception:
+                    # Fallback: copy the current output if fixer fails
+                    shutil.copy(output_pdb_path, tmp_heavy)
+
+                faspr_success = _run_faspr(tmp_heavy, tmp_faspr_out)
+                faspr_seconds = time.time() - t_faspr
+
+                if faspr_success:
+                    # Add hydrogens and a brief, standardized minimization, then overwrite output
+                    if post_faspr_minimize:
+                        _, post_min_seconds = _add_hydrogens_and_minimize(
+                            tmp_faspr_out, output_pdb_path,
+                            platform_order=['OpenCL', 'CUDA', 'CPU'],
+                            force_tolerance_kj_mol_nm=openmm_final_force_tolerance_kj_mol_nm,
+                            max_iterations=300
+                        )
+                    else:
+                        # If not minimizing, at least re-add hydrogens
+                        try:
+                            fixer2 = PDBFixer(filename=tmp_faspr_out)
+                            fixer2.findMissingResidues()
+                            fixer2.findNonstandardResidues()
+                            fixer2.replaceNonstandardResidues()
+                            fixer2.removeHeterogens(keepWater=False)
+                            fixer2.findMissingAtoms()
+                            fixer2.addMissingAtoms()
+                            fixer2.addMissingHydrogens(7.0)
+                            with open(output_pdb_path, 'w') as f2:
+                                app.PDBFile.writeFile(fixer2.topology, fixer2.positions, f2, keepIds=True)
+                        except Exception:
+                            shutil.copy(tmp_faspr_out, output_pdb_path)
+                # Cleanup temp
+                try:
+                    shutil.rmtree(tmp_dir)
+                except Exception:
+                    pass
+            except Exception as e_f:
+                print(f"[FASPR] WARN: repack step failed: {e_f}")
+
+        # 6. Clean the output PDB
         clean_pdb(output_pdb_path)
 
         # Explicitly delete heavy OpenMM objects to avoid cumulative slowdowns across many trajectories
@@ -950,6 +1161,10 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
             _perf["align_seconds"] = time.time() - t_align_start
             _perf["b_factor_seconds"] = time.time() - t_bfac_start
             _perf["total_seconds"] = elapsed_total
+            if use_faspr_repack:
+                _perf["faspr_seconds"] = faspr_seconds
+                _perf["faspr_success"] = bool(faspr_success)
+                _perf["post_faspr_min_seconds"] = post_min_seconds
             perf_report.update(_perf)
         vprint(f"[OpenMM-Relax] Completed relax for {basename} in {elapsed_total:.2f}s (platform={platform_name_used})")
         return platform_name_used

@@ -156,12 +156,26 @@ rm "${params_file}" || { echo -e "Warning: Failed to remove AlphaFold2 weights a
 echo -e "Changing permissions for executables\n"
 chmod +x "${install_dir}/functions/dssp" || { echo -e "Error: Failed to chmod dssp"; exit 1; }
 
-# chmod sc binary for shape complementarity (always needed for PyRosetta-free mode)
+# chmod binaries in functions/ (sc, dssp, FASPR)
 if [ -f "${install_dir}/functions/sc" ]; then
     chmod +x "${install_dir}/functions/sc" || { echo -e "Error: Failed to chmod sc"; exit 1; }
     echo -e "Made sc binary executable for shape complementarity calculations"
 else
     echo -e "Warning: sc binary not found at ${install_dir}/functions/sc - shape complementarity will use placeholder values"
+fi
+
+if [ -f "${install_dir}/functions/dssp" ]; then
+    chmod +x "${install_dir}/functions/dssp" || { echo -e "Error: Failed to chmod dssp"; exit 1; }
+    echo -e "Made dssp binary executable"
+else
+    echo -e "Warning: dssp binary not found at ${install_dir}/functions/dssp - DSSP computations may be unavailable"
+fi
+
+if [ -f "${install_dir}/functions/FASPR" ]; then
+    chmod +x "${install_dir}/functions/FASPR" || { echo -e "Error: Failed to chmod FASPR"; exit 1; }
+    echo -e "Made FASPR binary executable"
+else
+    echo -e "Warning: FASPR binary not found at ${install_dir}/functions/FASPR - side-chain repacking will be unavailable"
 fi
 
 # Only setup DAlphaBall.gcc if installing PyRosetta

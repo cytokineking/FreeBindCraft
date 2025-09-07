@@ -42,7 +42,7 @@ def ensure_binaries_executable(use_pyrosetta=True):
     functions_dir = os.path.join(bindcraft_folder, "functions")
     
     # Always needed binaries
-    binaries = ["dssp", "sc"]
+    binaries = ["dssp", "sc", "FASPR"]
     
     # Only add DAlphaBall.gcc if using PyRosetta
     if use_pyrosetta:
