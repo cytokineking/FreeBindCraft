@@ -531,7 +531,9 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                  restraint_ramp_factors=(1.0, 0.4, 0.0), # 3-stage restraint ramp factors
                  md_steps_per_shake=5000, # MD steps for each shake (applied only to first two stages)
                  lj_rep_base_k_kj_mol=10.0, # Base strength for extra LJ repulsion (kJ/mol)
-                 lj_rep_ramp_factors=(0.0, 1.5, 3.0)): # 3-stage LJ repulsion ramp factors (soft → hard)
+                 lj_rep_ramp_factors=(0.0, 1.5, 3.0), # 3-stage LJ repulsion ramp factors (soft → hard)
+                 perf_report=None, # Optional dict to populate with detailed timing/energy metrics
+                 override_platform_order=None):
     """
     Relaxes a PDB structure using OpenMM with L-BFGS minimizer.
     Uses PDBFixer to prepare the structure first.
@@ -551,6 +553,7 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
     start_time = time.time()
     basename = os.path.basename(pdb_file_path)
     vprint(f"[OpenMM-Relax] Initiating relax for {basename}")
+    _perf = {"stages": []} if isinstance(perf_report, dict) else None
     best_energy = float('inf') * unit.kilojoule_per_mole # Initialize with units
     best_positions = None
 
@@ -588,6 +591,7 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
 
     try:
         # 1. Prepare the PDB structure using PDBFixer
+        t_prep_start = time.time()
         fixer = PDBFixer(filename=pdb_file_path)
         fixer.findMissingResidues()
         fixer.findNonstandardResidues()
@@ -596,6 +600,8 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         fixer.findMissingAtoms()
         fixer.addMissingAtoms()
         fixer.addMissingHydrogens(7.0) # Add hydrogens at neutral pH
+        if _perf is not None:
+            _perf["prep_seconds"] = time.time() - t_prep_start
 
         # 2. Set up OpenMM ForceField, System, Integrator, and Simulation
         # Reuse a module-level ForceField instance to avoid re-parsing XMLs each call
@@ -646,17 +652,20 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         simulation = None
         platform_name_used = None # To store the name of the successfully used platform
 
-        platform_order = []
-        if use_gpu_relax:
-            # Prefer OpenCL, then CUDA (override with env if needed)
-            env_order = os.environ.get('OPENMM_PLATFORM_ORDER')
-            if env_order:
-                platform_order = [p.strip() for p in env_order.split(',') if p.strip()]
-            else:
-                platform_order.extend(['OpenCL', 'CUDA'])
+        if isinstance(override_platform_order, (list, tuple)) and override_platform_order:
+            platform_order = list(override_platform_order)
         else:
-            # Explicit CPU-only path if GPU is not requested
-            platform_order.append('CPU')
+            platform_order = []
+            if use_gpu_relax:
+                # Prefer OpenCL, then CUDA (override with env if needed)
+                env_order = os.environ.get('OPENMM_PLATFORM_ORDER')
+                if env_order:
+                    platform_order = [p.strip() for p in env_order.split(',') if p.strip()]
+                else:
+                    platform_order.extend(['OpenCL', 'CUDA'])
+            else:
+                # Explicit CPU-only path if GPU is not requested
+                platform_order.append('CPU')
 
         last_exception = None
         for p_name_to_try in platform_order:
@@ -710,6 +719,7 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         # Optional Pre-Minimization Step (before main ramp loop)
         # Perform if restraints or LJ repulsion are active, to stabilize structure.
         if restraint_k_kcal_mol_A2 > 0 or lj_rep_base_k_kj_mol > 0:
+            t_init_min_start = time.time()
             
             # Set LJ repulsion to zero for this initial minimization
             if lj_rep_custom_force is not None and k_rep_lj_param_index != -1 and lj_rep_base_k_kj_mol > 0:
@@ -728,6 +738,8 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                 tolerance=initial_min_tolerance,
                 maxIterations=openmm_max_iterations 
             )
+            if _perf is not None:
+                _perf["initial_min_seconds"] = time.time() - t_init_min_start
 
         # 3. Perform staged relaxation: ramp restraints, limited MD shakes, and minimization
         base_k_for_ramp_kcal = restraint_k_kcal_mol_A2
@@ -753,6 +765,29 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
 
         for i_stage_val, (k_factor_restraint, current_lj_rep_k_factor) in enumerate(ramp_pairs):
             stage_num = i_stage_val + 1
+            _stage_metrics = None
+            if _perf is not None:
+                _stage_metrics = {
+                    "stage_index": stage_num,
+                    "restraint_factor": float(k_factor_restraint),
+                    "lj_rep_factor": float(current_lj_rep_k_factor),
+                    "md_steps_run": 0,
+                    "md_seconds": 0.0,
+                    "min_seconds": 0.0,
+                    "min_calls": 0,
+                    "min_energy_trace_kj": [],
+                    "energy_start_kj": None,
+                    "md_post_energy_kj": None,
+                    "final_energy_kj": None,
+                }
+
+            # Record starting energy for this stage
+            try:
+                _stage_energy_start = simulation.context.getState(getEnergy=True).getPotentialEnergy()
+                if _stage_metrics is not None:
+                    _stage_metrics["energy_start_kj"] = float(_stage_energy_start.value_in_unit(unit.kilojoule_per_mole))
+            except Exception:
+                pass
 
             # Set LJ repulsive ramp for the current stage
             if lj_rep_custom_force is not None and k_rep_lj_param_index != -1 and lj_rep_base_k_kj_mol > 0:
@@ -769,8 +804,17 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
 
             # MD Shake only for first two ramp stages for speed-performance tradeoff
             if md_steps_per_shake > 0 and i_stage_val < 2:
+                t_md_start = time.time()
                 simulation.context.setVelocitiesToTemperature(300*unit.kelvin) # Reinitialize velocities
                 simulation.step(md_steps_per_shake)
+                if _stage_metrics is not None:
+                    _stage_metrics["md_steps_run"] = int(md_steps_per_shake)
+                    _stage_metrics["md_seconds"] = time.time() - t_md_start
+                    try:
+                        _md_energy = simulation.context.getState(getEnergy=True).getPotentialEnergy()
+                        _stage_metrics["md_post_energy_kj"] = float(_md_energy.value_in_unit(unit.kilojoule_per_mole))
+                    except Exception:
+                        pass
 
             # Minimization for the current stage
             # Set force tolerance for current stage
@@ -787,10 +831,17 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
             small_improvement_streak = 0
             last_energy = simulation.context.getState(getEnergy=True).getPotentialEnergy()
 
+            t_min_start = time.time()
             while True:
                 simulation.minimizeEnergy(tolerance=force_tolerance_quantity,
                                           maxIterations=per_call_max_iterations)
                 current_energy = simulation.context.getState(getEnergy=True).getPotentialEnergy()
+                if _stage_metrics is not None:
+                    _stage_metrics["min_calls"] += 1
+                    try:
+                        _stage_metrics["min_energy_trace_kj"].append(float(current_energy.value_in_unit(unit.kilojoule_per_mole)))
+                    except Exception:
+                        pass
 
                 # Check improvement magnitude
                 try:
@@ -816,6 +867,13 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                     break
 
             stage_final_energy = last_energy
+            if _stage_metrics is not None:
+                try:
+                    _stage_metrics["final_energy_kj"] = float(stage_final_energy.value_in_unit(unit.kilojoule_per_mole))
+                except Exception:
+                    _stage_metrics["final_energy_kj"] = None
+                _stage_metrics["min_seconds"] = time.time() - t_min_start
+                _perf["stages"].append(_stage_metrics)
 
             # Accept-to-best bookkeeping
             if stage_final_energy < best_energy:
@@ -827,17 +885,20 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
             simulation.context.setPositions(best_positions)
 
         # 4. Save the relaxed structure
+        t_save_start = time.time()
         positions = simulation.context.getState(getPositions=True).getPositions()
         with open(output_pdb_path, 'w') as outfile:
             app.PDBFile.writeFile(simulation.topology, positions, outfile, keepIds=True)
 
         # 4a. Align relaxed structure to original pdb_file_path using all CA atoms
+        t_align_start = time.time()
         try:
             biopython_align_all_ca(pdb_file_path, output_pdb_path)
         except Exception as _:
             pass # Keep silent on alignment failure
 
         # 4b. Apply original B-factors to the (now aligned) relaxed structure
+        t_bfac_start = time.time()
         if original_residue_b_factors:
             try:
                 # Use Bio.PDB parser and PDBIO for this
@@ -874,6 +935,22 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         gc.collect()
 
         elapsed_total = time.time() - start_time
+        if _perf is not None:
+            # Summarize overall perf settings/results
+            _perf["platform"] = platform_name_used
+            _perf["ramp_count"] = num_stages
+            _perf["md_steps_per_shake"] = int(md_steps_per_shake)
+            _perf["restraint_ramp_factors"] = list(effective_restraint_factors)
+            _perf["lj_rep_ramp_factors"] = list(effective_lj_rep_factors)
+            try:
+                _perf["best_energy_kj"] = float(best_energy.value_in_unit(unit.kilojoule_per_mole))
+            except Exception:
+                _perf["best_energy_kj"] = None
+            _perf["save_seconds"] = time.time() - t_save_start
+            _perf["align_seconds"] = time.time() - t_align_start
+            _perf["b_factor_seconds"] = time.time() - t_bfac_start
+            _perf["total_seconds"] = elapsed_total
+            perf_report.update(_perf)
         vprint(f"[OpenMM-Relax] Completed relax for {basename} in {elapsed_total:.2f}s (platform={platform_name_used})")
         return platform_name_used
 
@@ -883,6 +960,12 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         elapsed_total = time.time() - start_time
         print(f"[OpenMM-Relax] ERROR; copied input to output for {basename} after {elapsed_total:.2f}s")
         print(f"[OpenMM-Relax] ERROR; exeception {str(_)}")
+        if _perf is not None:
+            try:
+                _perf["exception"] = str(_)
+                perf_report.update(_perf)
+            except Exception:
+                pass
         # Guard against 'platform_name_used' not being assigned yet
         try:
             return platform_name_used

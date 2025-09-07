@@ -1,6 +1,8 @@
 import argparse
 import os
 import sys
+import json
+from datetime import datetime
 
 # Ensure the project root is in the Python path to allow imports from 'functions'
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -27,8 +29,10 @@ except Exception as e_gen:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Test OpenMM and PyRosetta relaxation. "\
-                    "Prints verbose output from the relaxation functions."
+        description=(
+            "Test OpenMM and PyRosetta relaxation with optional performance sweeps. "
+            "Prints per-stage timing and energy metrics."
+        )
     )
     parser.add_argument(
         "input_pdb_path",
@@ -40,6 +44,30 @@ if __name__ == "__main__":
         type=str,
         help="Base path for the relaxed output PDB files. Suffixes _openmm.pdb and _pyrosetta.pdb will be added."
     )
+
+    # OpenMM performance controls (single-run)
+    parser.add_argument("--platform", choices=["auto", "cpu", "gpu", "cuda", "opencl"], default="auto",
+                        help="Platform selection for OpenMM relax (auto uses default search)")
+    parser.add_argument("--md-steps-per-shake", type=int, default=5000,
+                        help="MD steps per shake (0 disables MD shakes)")
+    parser.add_argument("--restraint-ramp", type=str, default="1.0,0.4,0.0",
+                        help="Comma-separated restraint ramp factors (e.g., 1.0,0.4,0.0)")
+    parser.add_argument("--lj-ramp", type=str, default="0.0,1.5,3.0",
+                        help="Comma-separated LJ repulsion ramp factors (e.g., 0.0,1.5,3.0)")
+    parser.add_argument("--max-iters", type=int, default=1000,
+                        help="Max iterations per minimization stage (0 for unlimited)")
+    parser.add_argument("--ramp-force-tol", type=float, default=2.0,
+                        help="Force tolerance (kJ/mol/nm) for ramp minimization stages")
+    parser.add_argument("--final-force-tol", type=float, default=0.1,
+                        help="Force tolerance (kJ/mol/nm) for final stage minimization")
+    parser.add_argument("--json-out", type=str, default=None,
+                        help="Optional path to write single-run perf JSON")
+
+    # Sweep controls
+    parser.add_argument("--sweep-basic", action="store_true",
+                        help="Run a basic grid sweep over CPU/GPU x MD on/off x ramp stages 1/2/3")
+    parser.add_argument("--json-dir", type=str, default=None,
+                        help="If set with --sweep-basic, writes one JSON per configuration to this directory")
 
     args = parser.parse_args()
 
@@ -84,22 +112,114 @@ if __name__ == "__main__":
             sys.exit(1)
             
     # --- OpenMM Relaxation ---
-    print(f"\n--- Starting OpenMM Relaxation ---")
-    print(f"Calling openmm_relax function for {openmm_output_pdb_path}...")
-    try:
-        # Call the imported openmm_relax function
-        used_platform = openmm_relax(args.input_pdb_path, openmm_output_pdb_path, use_gpu_relax=True) # Attempt GPU relaxation (CUDA -> OpenCL -> CPU fallback)
-        print(f"openmm_relax function completed. Platform used: {used_platform}")
-        if os.path.exists(openmm_output_pdb_path):
-            print(f"OpenMM Relaxed PDB saved to: {openmm_output_pdb_path}")
-        else:
-            print(f"Warning: OpenMM Output PDB file was not created at {openmm_output_pdb_path}.")
+    def _parse_floats_csv(s, default):
+        try:
+            vals = [float(x.strip()) for x in str(s).split(',') if x.strip() != ""]
+            return vals if vals else list(default)
+        except Exception:
+            return list(default)
 
-    except Exception as e:
-        print(f"--- Test Script: Error during openmm_relax execution (forced CPU) ---")
-        print(f"An exception occurred: {type(e).__name__}: {e}")
-        import traceback
-        traceback.print_exc()
+    def _platform_override_from_choice(choice):
+        c = str(choice).lower()
+        if c == "cpu":
+            return ["CPU"], False
+        if c == "cuda":
+            return ["CUDA"], True
+        if c == "opencl":
+            return ["OpenCL"], True
+        if c == "gpu":
+            return ["OpenCL", "CUDA"], True
+        return None, True  # auto
+
+    def _run_openmm_once(tag, input_pdb, out_pdb, platform_choice, md_steps, rest_ramp, lj_ramp, max_iters, ramp_tol, final_tol, json_out_path=None):
+        print(f"\n--- OpenMM Relax Run: {tag} ---")
+        perf = {}
+        override, use_gpu = _platform_override_from_choice(platform_choice)
+        try:
+            used_platform = openmm_relax(
+                input_pdb,
+                out_pdb,
+                use_gpu_relax=use_gpu,
+                openmm_max_iterations=max_iters,
+                openmm_ramp_force_tolerance_kj_mol_nm=ramp_tol,
+                openmm_final_force_tolerance_kj_mol_nm=final_tol,
+                restraint_k_kcal_mol_A2=3.0,
+                restraint_ramp_factors=rest_ramp,
+                md_steps_per_shake=md_steps,
+                lj_rep_base_k_kj_mol=10.0,
+                lj_rep_ramp_factors=lj_ramp,
+                perf_report=perf,
+                override_platform_order=override
+            )
+            print(f"Platform: {used_platform}")
+            print(f"Total seconds: {perf.get('total_seconds'):.2f}")
+            print(f"Initial minimization seconds: {perf.get('initial_min_seconds', 0.0):.2f}")
+            print(f"Ramp count: {perf.get('ramp_count')}, MD steps/shake: {perf.get('md_steps_per_shake')}")
+            if perf.get('best_energy_kj') is not None:
+                print(f"Best energy (kJ/mol): {perf['best_energy_kj']:.2f}")
+            for st in perf.get('stages', []):
+                print(
+                    f"  Stage {st['stage_index']}: md_steps={st['md_steps_run']}, "
+                    f"md_s={st['md_seconds']:.2f}, min_calls={st['min_calls']}, min_s={st['min_seconds']:.2f}, "
+                    f"E0={st.get('energy_start_kj')}, Emd={st.get('md_post_energy_kj')}, Efin={st.get('final_energy_kj')}"
+                )
+            if json_out_path:
+                try:
+                    os.makedirs(os.path.dirname(json_out_path), exist_ok=True) if os.path.dirname(json_out_path) else None
+                    with open(json_out_path, 'w') as jf:
+                        json.dump(perf, jf, indent=2)
+                    print(f"Perf JSON written: {json_out_path}")
+                except Exception as je:
+                    print(f"Failed to write JSON to {json_out_path}: {je}")
+            if os.path.exists(out_pdb):
+                print(f"OpenMM Relaxed PDB saved to: {out_pdb}")
+        except Exception as e:
+            print(f"OpenMM run failed for tag '{tag}': {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # Single-run or sweep execution
+    if args.sweep_basic:
+        print("\nRunning basic sweep over platform x MD on/off x ramp stages 1/2/3...")
+        base_rest = _parse_floats_csv(args.restraint_ramp, [1.0, 0.4, 0.0])
+        base_lj = _parse_floats_csv(args.lj_ramp, [0.0, 1.5, 3.0])
+        platforms = ["cpu", "gpu"]
+        md_opts = [0, max(0, int(args.md_steps_per_shake))]
+        stage_counts = [1, 2, 3]
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        for plat in platforms:
+            for md in md_opts:
+                for sc in stage_counts:
+                    rest = base_rest[:sc]
+                    lj = base_lj[:sc]
+                    tag = f"{plat}_md{md}_st{sc}"
+                    out_pdb = os.path.splitext(openmm_output_pdb_path)[0] + f"_{tag}.pdb"
+                    json_out = None
+                    if args.json_dir:
+                        json_out = os.path.join(args.json_dir, f"perf_{tag}_{stamp}.json")
+                    _run_openmm_once(
+                        tag, args.input_pdb_path, out_pdb,
+                        plat, md, rest, lj,
+                        args.max_iters, args.ramp_force_tol, args.final_force_tol,
+                        json_out_path=json_out
+                    )
+    else:
+        # Single-run
+        rest = _parse_floats_csv(args.restraint_ramp, [1.0, 0.4, 0.0])
+        lj = _parse_floats_csv(args.lj_ramp, [0.0, 1.5, 3.0])
+        _run_openmm_once(
+            "single",
+            args.input_pdb_path,
+            openmm_output_pdb_path,
+            args.platform,
+            max(0, int(args.md_steps_per_shake)),
+            rest,
+            lj,
+            args.max_iters,
+            args.ramp_force_tol,
+            args.final_force_tol,
+            json_out_path=args.json_out
+        )
 
     # --- PyRosetta Relaxation ---
     print(f"\n--- Starting PyRosetta Relaxation ---")
