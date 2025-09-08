@@ -1,21 +1,29 @@
 """
 Alternative implementations for PyRosetta functionality.
 
-This module provides OpenMM and Biopython-based alternatives to PyRosetta functions,
+This module provides OpenMM, Biopython, and FASPR-based alternatives to PyRosetta functions,
 enabling BindCraft to run without PyRosetta installation. These implementations
 aim to provide similar functionality with reasonable approximations where exact
 replication is not possible.
 
 Functions:
-    openmm_relax: Structure relaxation using OpenMM
+    openmm_relax: Structure relaxation using OpenMM with optional FASPR side-chain repacking
     openmm_relax_subprocess: Run relax in a fresh process to isolate OpenCL context
-    pr_alternative_score_interface: Interface scoring using Biopython
-    
+    pr_alternative_score_interface: Interface scoring using Biopython and FreeSASA
+    _calculate_shape_complementarity: Shape complementarity calculation using sc-rs or fallback
+    _compute_sasa_metrics: SASA calculations using Biopython or FreeSASA
+    _compute_sasa_metrics_with_freesasa: FreeSASA-based SASA calculations
+    _run_faspr: Helper to run FASPR side-chain packing
+    _resolve_faspr_binary: Locate FASPR binary
+    _add_hydrogens_and_minimize: Add hydrogens and minimize post-FASPR structures
+
 Helper Functions:
     _get_openmm_forcefield: Singleton ForceField instance
     _create_lj_repulsive_force: Custom LJ repulsion for clash resolution
     _create_backbone_restraint_force: Backbone position restraints
     _chain_total_sasa: Calculate total SASA for a chain
+    _suppress_freesasa_warnings: Suppress FreeSASA warnings
+    hotspot_residues: Interface residue identification
 
 Rationale:
     In long runs we observed sporadic OpenCL context failures after many relax calls,
@@ -436,7 +444,6 @@ def _compute_sasa_metrics_with_freesasa(pdb_file_path, binder_chain="B", target_
 ########################################################
 # Interface scoring
 ########################################################
-
 def pr_alternative_score_interface(pdb_file, binder_chain="B", target_chain="A", sasa_engine="auto"):
     """
     Calculate interface scores using PyRosetta-free alternatives including SCASA shape complementarity.
@@ -669,23 +676,172 @@ def _create_backbone_restraint_force(system, fixer, restraint_k_kcal_mol_A2):
             
     return restraint_force, k_restraint_param_index
 
-def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True, 
+# --- FASPR integration helpers ---
+def _resolve_faspr_binary():
+    """Locate the FASPR binary. Search order: env FASPR_BIN → functions/FASPR → PATH.
+
+    Returns
+    -------
+    tuple[str|None, str|None]
+        (binary_path, binary_dir) or (None, None) if not found.
+    """
+    # Env override
+    env_bin = os.environ.get('FASPR_BIN')
+    if env_bin and os.path.isfile(env_bin) and os.access(env_bin, os.X_OK):
+        return env_bin, os.path.dirname(os.path.abspath(env_bin))
+
+    # Repo-provided binary
+    try:
+        module_dir = os.path.dirname(os.path.abspath(__file__))
+        candidate = os.path.join(module_dir, 'FASPR')
+        if os.path.isfile(candidate):
+            # ensure executable bit if possible
+            try:
+                if not os.access(candidate, os.X_OK):
+                    os.chmod(candidate, os.stat(candidate).st_mode | 0o755)
+            except Exception:
+                pass
+            if os.access(candidate, os.X_OK):
+                return candidate, module_dir
+    except Exception:
+        pass
+
+    # PATH lookup
+    which_faspr = shutil.which('FASPR')
+    if which_faspr and os.path.isfile(which_faspr) and os.access(which_faspr, os.X_OK):
+        return which_faspr, os.path.dirname(os.path.abspath(which_faspr))
+
+    return None, None
+
+def _run_faspr(input_pdb_path, output_pdb_path, sequence_txt_path=None, timeout=900):
+    """Run FASPR on an input PDB and write repacked output.
+
+    FASPR requires 'dun2010bbdep.bin' to be colocated with the executable. We set cwd
+    to the FASPR directory so the binary can find its rotamer library.
+
+    Returns True on success, False otherwise.
+    """
+    faspr_bin, faspr_dir = _resolve_faspr_binary()
+    if not faspr_bin or not faspr_dir:
+        print("[FASPR] WARN: FASPR binary not found; skipping repack")
+        return False
+
+    cmd = [faspr_bin, '-i', os.path.abspath(input_pdb_path), '-o', os.path.abspath(output_pdb_path)]
+    if sequence_txt_path and os.path.isfile(sequence_txt_path):
+        cmd.extend(['-s', os.path.abspath(sequence_txt_path)])
+
+    try:
+        vprint(f"[FASPR] Running: {' '.join(cmd)}")
+        # Capture output but do not emit banner/stdout; only report on errors via exceptions below.
+        proc = subprocess.run(cmd, cwd=faspr_dir, check=True, capture_output=True, text=True, timeout=timeout)
+        # Verify output exists and is non-empty
+        if os.path.isfile(output_pdb_path) and os.path.getsize(output_pdb_path) > 0:
+            return True
+    except subprocess.TimeoutExpired:
+        print(f"[FASPR] ERROR: Timeout running FASPR on {os.path.basename(input_pdb_path)}")
+    except subprocess.CalledProcessError as e:
+        print(f"[FASPR] ERROR: FASPR failed: rc={e.returncode} stderr={getattr(e, 'stderr', '')}")
+    except Exception as e:
+        print(f"[FASPR] ERROR: {e}")
+    return False
+
+def _add_hydrogens_and_minimize(pdb_in_path, pdb_out_path, platform_order=None,
+                                force_tolerance_kj_mol_nm=0.1, max_iterations=500):
+    """Add hydrogens with PDBFixer and run a short OpenMM minimization, then save PDB.
+
+    Returns
+    -------
+    tuple[str|None, float]
+        (platform_used, seconds)
+    """
+    t0 = time.time()
+    try:
+        fixer = PDBFixer(filename=pdb_in_path)
+        fixer.findMissingResidues()
+        fixer.findNonstandardResidues()
+        fixer.replaceNonstandardResidues()
+        fixer.removeHeterogens(keepWater=False)
+        fixer.findMissingAtoms()
+        fixer.addMissingAtoms()
+        fixer.addMissingHydrogens(7.0)
+
+        forcefield = _get_openmm_forcefield()
+        system = forcefield.createSystem(fixer.topology,
+                                         nonbondedMethod=app.CutoffNonPeriodic,
+                                         nonbondedCutoff=1.0*unit.nanometer,
+                                         constraints=app.HBonds)
+
+        integrator = openmm.LangevinMiddleIntegrator(300*unit.kelvin,
+                                                     1.0/unit.picosecond,
+                                                     0.002*unit.picoseconds)
+
+        # Platform selection
+        plat_used = None
+        props = {}
+        sim = None
+        if platform_order is None:
+            platform_order = ['OpenCL', 'CUDA', 'CPU']
+        for p_name in platform_order:
+            try:
+                platform_obj = Platform.getPlatformByName(p_name)
+                if p_name == 'CUDA':
+                    props = {'CudaPrecision': 'mixed'}
+                elif p_name == 'OpenCL':
+                    props = {'OpenCLPrecision': 'single'}
+                sim = app.Simulation(fixer.topology, system, integrator, platform_obj, props)
+                plat_used = p_name
+                break
+            except Exception:
+                sim = None
+                continue
+        if sim is None:
+            raise OpenMMException("No suitable OpenMM platform for post-FASPR minimization")
+
+        sim.context.setPositions(fixer.positions)
+        tol = force_tolerance_kj_mol_nm * unit.kilojoule_per_mole / unit.nanometer
+        sim.minimizeEnergy(tolerance=tol, maxIterations=max_iterations)
+        positions = sim.context.getState(getPositions=True).getPositions()
+        with open(pdb_out_path, 'w') as outf:
+            app.PDBFile.writeFile(sim.topology, positions, outf, keepIds=True)
+        # Cleanup
+        try:
+            del sim, integrator, system, fixer
+        except Exception:
+            pass
+        gc.collect()
+        return plat_used, (time.time() - t0)
+    except Exception as e:
+        print(f"[OpenMM-PostFASPR] WARN: Failed post-FASPR H-add/min: {e}")
+        try:
+            shutil.copy(pdb_in_path, pdb_out_path)
+        except Exception:
+            pass
+        return None, (time.time() - t0)
+
+def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                  openmm_max_iterations=1000, # Safety cap per stage to avoid stalls (set 0 for unlimited)
                  # Default force tolerances for ramp stages (kJ/mol/nm)
-                 openmm_ramp_force_tolerance_kj_mol_nm=2.0, 
+                 openmm_ramp_force_tolerance_kj_mol_nm=2.0,
                  openmm_final_force_tolerance_kj_mol_nm=0.1,
-                 restraint_k_kcal_mol_A2=3.0, 
+                 restraint_k_kcal_mol_A2=3.0,
                  restraint_ramp_factors=(1.0, 0.4, 0.0), # 3-stage restraint ramp factors
-                 md_steps_per_shake=5000, # MD steps for each shake (applied only to first two stages)
+                 md_steps_per_shake=1000, # MD steps for each shake (applied only to first two stages)
                  lj_rep_base_k_kj_mol=10.0, # Base strength for extra LJ repulsion (kJ/mol)
-                 lj_rep_ramp_factors=(0.0, 1.5, 3.0)): # 3-stage LJ repulsion ramp factors (soft → hard)
+                 lj_rep_ramp_factors=(0.0, 1.5, 3.0), # 3-stage LJ repulsion ramp factors (soft → hard)
+                 perf_report=None, # Optional dict to populate with detailed timing/energy metrics
+                 override_platform_order=None,
+                 use_faspr_repack=True, # If True, run FASPR repack after relax (default: enabled)
+                 post_faspr_minimize=True # If True, add H and short standardized min after FASPR
+                 ):
     """
     Relaxes a PDB structure using OpenMM with L-BFGS minimizer.
     Uses PDBFixer to prepare the structure first.
-    Applies backbone heavy-atom harmonic restraints (ramped down using restraint_ramp_factors) 
+    Applies backbone heavy-atom harmonic restraints (ramped down using restraint_ramp_factors)
     and uses OBC2 implicit solvent.
     Includes an additional ramped LJ-like repulsive force (using lj_rep_ramp_factors) to help with initial clashes.
     Includes short MD shakes for the first two ramp stages only (speed optimization).
+    Optionally integrates FASPR (Fast, Accurate, and Deterministic Protein Side-chain Packing) for side-chain repacking after relaxation,
+    followed by hydrogen addition and a short minimization to standardize the final structure.
     Uses accept-to-best position bookkeeping across all stages.
     Aligns to original and copies B-factors.
     
@@ -698,6 +854,7 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
     start_time = time.time()
     basename = os.path.basename(pdb_file_path)
     vprint(f"[OpenMM-Relax] Initiating relax for {basename}")
+    _perf = {"stages": []} if isinstance(perf_report, dict) else None
     best_energy = float('inf') * unit.kilojoule_per_mole # Initialize with units
     best_positions = None
 
@@ -735,6 +892,7 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
 
     try:
         # 1. Prepare the PDB structure using PDBFixer
+        t_prep_start = time.time()
         fixer = PDBFixer(filename=pdb_file_path)
         fixer.findMissingResidues()
         fixer.findNonstandardResidues()
@@ -743,6 +901,8 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         fixer.findMissingAtoms()
         fixer.addMissingAtoms()
         fixer.addMissingHydrogens(7.0) # Add hydrogens at neutral pH
+        if _perf is not None:
+            _perf["prep_seconds"] = time.time() - t_prep_start
 
         # 2. Set up OpenMM ForceField, System, Integrator, and Simulation
         # Reuse a module-level ForceField instance to avoid re-parsing XMLs each call
@@ -793,17 +953,20 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         simulation = None
         platform_name_used = None # To store the name of the successfully used platform
 
-        platform_order = []
-        if use_gpu_relax:
-            # Prefer OpenCL, then CUDA (override with env if needed)
-            env_order = os.environ.get('OPENMM_PLATFORM_ORDER')
-            if env_order:
-                platform_order = [p.strip() for p in env_order.split(',') if p.strip()]
-            else:
-                platform_order.extend(['OpenCL', 'CUDA'])
+        if isinstance(override_platform_order, (list, tuple)) and override_platform_order:
+            platform_order = list(override_platform_order)
         else:
-            # Explicit CPU-only path if GPU is not requested
-            platform_order.append('CPU')
+            platform_order = []
+            if use_gpu_relax:
+                # Prefer OpenCL, then CUDA (override with env if needed)
+                env_order = os.environ.get('OPENMM_PLATFORM_ORDER')
+                if env_order:
+                    platform_order = [p.strip() for p in env_order.split(',') if p.strip()]
+                else:
+                    platform_order.extend(['OpenCL', 'CUDA'])
+            else:
+                # Explicit CPU-only path if GPU is not requested
+                platform_order.append('CPU')
 
         last_exception = None
         for p_name_to_try in platform_order:
@@ -857,6 +1020,7 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         # Optional Pre-Minimization Step (before main ramp loop)
         # Perform if restraints or LJ repulsion are active, to stabilize structure.
         if restraint_k_kcal_mol_A2 > 0 or lj_rep_base_k_kj_mol > 0:
+            t_init_min_start = time.time()
             
             # Set LJ repulsion to zero for this initial minimization
             if lj_rep_custom_force is not None and k_rep_lj_param_index != -1 and lj_rep_base_k_kj_mol > 0:
@@ -875,6 +1039,8 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                 tolerance=initial_min_tolerance,
                 maxIterations=openmm_max_iterations 
             )
+            if _perf is not None:
+                _perf["initial_min_seconds"] = time.time() - t_init_min_start
 
         # 3. Perform staged relaxation: ramp restraints, limited MD shakes, and minimization
         base_k_for_ramp_kcal = restraint_k_kcal_mol_A2
@@ -900,6 +1066,29 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
 
         for i_stage_val, (k_factor_restraint, current_lj_rep_k_factor) in enumerate(ramp_pairs):
             stage_num = i_stage_val + 1
+            _stage_metrics = None
+            if _perf is not None:
+                _stage_metrics = {
+                    "stage_index": stage_num,
+                    "restraint_factor": float(k_factor_restraint),
+                    "lj_rep_factor": float(current_lj_rep_k_factor),
+                    "md_steps_run": 0,
+                    "md_seconds": 0.0,
+                    "min_seconds": 0.0,
+                    "min_calls": 0,
+                    "min_energy_trace_kj": [],
+                    "energy_start_kj": None,
+                    "md_post_energy_kj": None,
+                    "final_energy_kj": None,
+                }
+
+            # Record starting energy for this stage
+            try:
+                _stage_energy_start = simulation.context.getState(getEnergy=True).getPotentialEnergy()
+                if _stage_metrics is not None:
+                    _stage_metrics["energy_start_kj"] = float(_stage_energy_start.value_in_unit(unit.kilojoule_per_mole))
+            except Exception:
+                pass
 
             # Set LJ repulsive ramp for the current stage
             if lj_rep_custom_force is not None and k_rep_lj_param_index != -1 and lj_rep_base_k_kj_mol > 0:
@@ -916,8 +1105,17 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
 
             # MD Shake only for first two ramp stages for speed-performance tradeoff
             if md_steps_per_shake > 0 and i_stage_val < 2:
+                t_md_start = time.time()
                 simulation.context.setVelocitiesToTemperature(300*unit.kelvin) # Reinitialize velocities
                 simulation.step(md_steps_per_shake)
+                if _stage_metrics is not None:
+                    _stage_metrics["md_steps_run"] = int(md_steps_per_shake)
+                    _stage_metrics["md_seconds"] = time.time() - t_md_start
+                    try:
+                        _md_energy = simulation.context.getState(getEnergy=True).getPotentialEnergy()
+                        _stage_metrics["md_post_energy_kj"] = float(_md_energy.value_in_unit(unit.kilojoule_per_mole))
+                    except Exception:
+                        pass
 
             # Minimization for the current stage
             # Set force tolerance for current stage
@@ -934,10 +1132,17 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
             small_improvement_streak = 0
             last_energy = simulation.context.getState(getEnergy=True).getPotentialEnergy()
 
+            t_min_start = time.time()
             while True:
                 simulation.minimizeEnergy(tolerance=force_tolerance_quantity,
                                           maxIterations=per_call_max_iterations)
                 current_energy = simulation.context.getState(getEnergy=True).getPotentialEnergy()
+                if _stage_metrics is not None:
+                    _stage_metrics["min_calls"] += 1
+                    try:
+                        _stage_metrics["min_energy_trace_kj"].append(float(current_energy.value_in_unit(unit.kilojoule_per_mole)))
+                    except Exception:
+                        pass
 
                 # Check improvement magnitude
                 try:
@@ -963,6 +1168,13 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                     break
 
             stage_final_energy = last_energy
+            if _stage_metrics is not None:
+                try:
+                    _stage_metrics["final_energy_kj"] = float(stage_final_energy.value_in_unit(unit.kilojoule_per_mole))
+                except Exception:
+                    _stage_metrics["final_energy_kj"] = None
+                _stage_metrics["min_seconds"] = time.time() - t_min_start
+                _perf["stages"].append(_stage_metrics)
 
             # Accept-to-best bookkeeping
             if stage_final_energy < best_energy:
@@ -974,17 +1186,20 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
             simulation.context.setPositions(best_positions)
 
         # 4. Save the relaxed structure
+        t_save_start = time.time()
         positions = simulation.context.getState(getPositions=True).getPositions()
         with open(output_pdb_path, 'w') as outfile:
             app.PDBFile.writeFile(simulation.topology, positions, outfile, keepIds=True)
 
         # 4a. Align relaxed structure to original pdb_file_path using all CA atoms
+        t_align_start = time.time()
         try:
             biopython_align_all_ca(pdb_file_path, output_pdb_path)
         except Exception as _:
             pass # Keep silent on alignment failure
 
         # 4b. Apply original B-factors to the (now aligned) relaxed structure
+        t_bfac_start = time.time()
         if original_residue_b_factors:
             try:
                 # Use Bio.PDB parser and PDBIO for this
@@ -1006,7 +1221,70 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
             except Exception as _:
                 pass # Keep silent on B-factor application failure
 
-        # 5. Clean the output PDB
+        # 5. Optional FASPR repacking and standardized cleanup
+        faspr_seconds = None
+        faspr_success = False
+        post_min_seconds = None
+        if use_faspr_repack:
+            try:
+                t_faspr = time.time()
+                # Prepare a temporary heavy-atom PDB for FASPR by stripping hydrogens
+                # Reuse PDBFixer to remove hydrogens to avoid FASPR backbone completeness issues.
+                tmp_dir = tempfile.mkdtemp(prefix='faspr_')
+                tmp_heavy = os.path.join(tmp_dir, 'input_heavy.pdb')
+                tmp_faspr_out = os.path.join(tmp_dir, 'faspr_out.pdb')
+
+                try:
+                    fixer_heavy = PDBFixer(filename=output_pdb_path)
+                    fixer_heavy.findMissingResidues()
+                    fixer_heavy.findNonstandardResidues()
+                    fixer_heavy.replaceNonstandardResidues()
+                    fixer_heavy.removeHeterogens(keepWater=False)
+                    fixer_heavy.findMissingAtoms()
+                    fixer_heavy.addMissingAtoms()
+                    # Intentionally DO NOT add hydrogens here; FASPR ignores sidechains but requires complete backbone
+                    with open(tmp_heavy, 'w') as ftmp:
+                        app.PDBFile.writeFile(fixer_heavy.topology, fixer_heavy.positions, ftmp, keepIds=True)
+                except Exception:
+                    # Fallback: copy the current output if fixer fails
+                    shutil.copy(output_pdb_path, tmp_heavy)
+
+                faspr_success = _run_faspr(tmp_heavy, tmp_faspr_out)
+                faspr_seconds = time.time() - t_faspr
+
+                if faspr_success:
+                    # Add hydrogens and a brief, standardized minimization, then overwrite output
+                    if post_faspr_minimize:
+                        _, post_min_seconds = _add_hydrogens_and_minimize(
+                            tmp_faspr_out, output_pdb_path,
+                            platform_order=['OpenCL', 'CUDA', 'CPU'],
+                            force_tolerance_kj_mol_nm=openmm_final_force_tolerance_kj_mol_nm,
+                            max_iterations=300
+                        )
+                    else:
+                        # If not minimizing, at least re-add hydrogens
+                        try:
+                            fixer2 = PDBFixer(filename=tmp_faspr_out)
+                            fixer2.findMissingResidues()
+                            fixer2.findNonstandardResidues()
+                            fixer2.replaceNonstandardResidues()
+                            fixer2.removeHeterogens(keepWater=False)
+                            fixer2.findMissingAtoms()
+                            fixer2.addMissingAtoms()
+                            fixer2.addMissingHydrogens(7.0)
+                            with open(output_pdb_path, 'w') as f2:
+                                app.PDBFile.writeFile(fixer2.topology, fixer2.positions, f2, keepIds=True)
+                        except Exception:
+                            shutil.copy(tmp_faspr_out, output_pdb_path)
+                # Cleanup temp
+                try:
+                    shutil.rmtree(tmp_dir)
+                except Exception:
+                    pass
+            except Exception as e_f:
+                print(f"[FASPR] WARN: repack step failed: {e_f}")
+
+        # 6. Clean the output PDB
         clean_pdb(output_pdb_path)
 
         # Explicitly delete heavy OpenMM objects to avoid cumulative slowdowns across many trajectories
@@ -1021,6 +1299,26 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         gc.collect()
 
         elapsed_total = time.time() - start_time
+        if _perf is not None:
+            # Summarize overall perf settings/results
+            _perf["platform"] = platform_name_used
+            _perf["ramp_count"] = num_stages
+            _perf["md_steps_per_shake"] = int(md_steps_per_shake)
+            _perf["restraint_ramp_factors"] = list(effective_restraint_factors)
+            _perf["lj_rep_ramp_factors"] = list(effective_lj_rep_factors)
+            try:
+                _perf["best_energy_kj"] = float(best_energy.value_in_unit(unit.kilojoule_per_mole))
+            except Exception:
+                _perf["best_energy_kj"] = None
+            _perf["save_seconds"] = time.time() - t_save_start
+            _perf["align_seconds"] = time.time() - t_align_start
+            _perf["b_factor_seconds"] = time.time() - t_bfac_start
+            _perf["total_seconds"] = elapsed_total
+            if use_faspr_repack:
+                _perf["faspr_seconds"] = faspr_seconds
+                _perf["faspr_success"] = bool(faspr_success)
+                _perf["post_faspr_min_seconds"] = post_min_seconds
+            perf_report.update(_perf)
         vprint(f"[OpenMM-Relax] Completed relax for {basename} in {elapsed_total:.2f}s (platform={platform_name_used})")
         return platform_name_used
 
@@ -1030,6 +1328,12 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         elapsed_total = time.time() - start_time
         print(f"[OpenMM-Relax] ERROR; copied input to output for {basename} after {elapsed_total:.2f}s")
         print(f"[OpenMM-Relax] ERROR; exeception {str(_)}")
+        if _perf is not None:
+            try:
+                _perf["exception"] = str(_)
+                perf_report.update(_perf)
+            except Exception:
+                pass
         # Guard against 'platform_name_used' not being assigned yet
         try:
             return platform_name_used

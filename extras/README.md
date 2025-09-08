@@ -58,10 +58,17 @@ This folder contains accessory scripts and documents to support BindCraft runs, 
     ```
 
 - `test_openmm_relax.py`
-  - Purpose: Test harness to run OpenMM and PyRosetta relaxation on a single PDB, writing two outputs for comparison.
+  - Purpose: Test harness to run OpenMM and PyRosetta relaxation on a single PDB, writing two outputs for comparison. Supports optional FASPR side-chain repacking.
   - Usage:
     ```bash
+    # basic
     python extras/test_openmm_relax.py ./example/PDL1.pdb ./tmp/output_relaxed
+
+    # enable FASPR repacking (requires functions/FASPR and functions/dun2010bbdep.bin)
+    python extras/test_openmm_relax.py ./example/PDL1.pdb ./tmp/output_relaxed --faspr
+
+    # sweep grid (writes JSON if --json-dir provided)
+    python extras/test_openmm_relax.py ./example/PDL1.pdb ./tmp/output_relaxed --sweep-basic --json-dir ./tmp/relax_json --faspr
     ```
 
 ## Notes on Environment and Binaries
