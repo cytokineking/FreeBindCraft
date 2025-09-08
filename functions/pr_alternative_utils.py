@@ -59,273 +59,15 @@ except Exception:
     freesasa = None  # type: ignore
     _HAS_FREESASA = False
 
-def _get_openmm_forcefield():
-    global _OPENMM_FORCEFIELD_SINGLETON
-    if _OPENMM_FORCEFIELD_SINGLETON is None:
-        _OPENMM_FORCEFIELD_SINGLETON = app.ForceField('amber14-all.xml', 'implicit/obc2.xml')
-    return _OPENMM_FORCEFIELD_SINGLETON
-
-# --- FASPR integration helpers ---
-def _resolve_faspr_binary():
-    """Locate the FASPR binary. Search order: env FASPR_BIN → functions/FASPR → PATH.
-
-    Returns
-    -------
-    tuple[str|None, str|None]
-        (binary_path, binary_dir) or (None, None) if not found.
-    """
-    # Env override
-    env_bin = os.environ.get('FASPR_BIN')
-    if env_bin and os.path.isfile(env_bin) and os.access(env_bin, os.X_OK):
-        return env_bin, os.path.dirname(os.path.abspath(env_bin))
-
-    # Repo-provided binary
-    try:
-        module_dir = os.path.dirname(os.path.abspath(__file__))
-        candidate = os.path.join(module_dir, 'FASPR')
-        if os.path.isfile(candidate):
-            # ensure executable bit if possible
-            try:
-                if not os.access(candidate, os.X_OK):
-                    os.chmod(candidate, os.stat(candidate).st_mode | 0o755)
-            except Exception:
-                pass
-            if os.access(candidate, os.X_OK):
-                return candidate, module_dir
-    except Exception:
-        pass
-
-    # PATH lookup
-    which_faspr = shutil.which('FASPR')
-    if which_faspr and os.path.isfile(which_faspr) and os.access(which_faspr, os.X_OK):
-        return which_faspr, os.path.dirname(os.path.abspath(which_faspr))
-
-    return None, None
-
-def _run_faspr(input_pdb_path, output_pdb_path, sequence_txt_path=None, timeout=900):
-    """Run FASPR on an input PDB and write repacked output.
-
-    FASPR requires 'dun2010bbdep.bin' to be colocated with the executable. We set cwd
-    to the FASPR directory so the binary can find its rotamer library.
-
-    Returns True on success, False otherwise.
-    """
-    faspr_bin, faspr_dir = _resolve_faspr_binary()
-    if not faspr_bin or not faspr_dir:
-        print("[FASPR] WARN: FASPR binary not found; skipping repack")
-        return False
-
-    cmd = [faspr_bin, '-i', os.path.abspath(input_pdb_path), '-o', os.path.abspath(output_pdb_path)]
-    if sequence_txt_path and os.path.isfile(sequence_txt_path):
-        cmd.extend(['-s', os.path.abspath(sequence_txt_path)])
-
-    try:
-        vprint(f"[FASPR] Running: {' '.join(cmd)}")
-        proc = subprocess.run(cmd, cwd=faspr_dir, check=True, capture_output=True, text=True, timeout=timeout)
-        if proc.stdout:
-            vprint(f"[FASPR] stdout: {proc.stdout.strip()[:500]}")
-        if proc.stderr:
-            vprint(f"[FASPR] stderr: {proc.stderr.strip()[:500]}")
-        # Verify output exists and is non-empty
-        if os.path.isfile(output_pdb_path) and os.path.getsize(output_pdb_path) > 0:
-            return True
-    except subprocess.TimeoutExpired:
-        print(f"[FASPR] ERROR: Timeout running FASPR on {os.path.basename(input_pdb_path)}")
-    except subprocess.CalledProcessError as e:
-        print(f"[FASPR] ERROR: FASPR failed: rc={e.returncode} stderr={getattr(e, 'stderr', '')}")
-    except Exception as e:
-        print(f"[FASPR] ERROR: {e}")
-    return False
-
-def _add_hydrogens_and_minimize(pdb_in_path, pdb_out_path, platform_order=None,
-                                force_tolerance_kj_mol_nm=0.1, max_iterations=500):
-    """Add hydrogens with PDBFixer and run a short OpenMM minimization, then save PDB.
-
-    Returns
-    -------
-    tuple[str|None, float]
-        (platform_used, seconds)
-    """
-    t0 = time.time()
-    try:
-        fixer = PDBFixer(filename=pdb_in_path)
-        fixer.findMissingResidues()
-        fixer.findNonstandardResidues()
-        fixer.replaceNonstandardResidues()
-        fixer.removeHeterogens(keepWater=False)
-        fixer.findMissingAtoms()
-        fixer.addMissingAtoms()
-        fixer.addMissingHydrogens(7.0)
-
-        forcefield = _get_openmm_forcefield()
-        system = forcefield.createSystem(fixer.topology,
-                                         nonbondedMethod=app.CutoffNonPeriodic,
-                                         nonbondedCutoff=1.0*unit.nanometer,
-                                         constraints=app.HBonds)
-
-        integrator = openmm.LangevinMiddleIntegrator(300*unit.kelvin,
-                                                     1.0/unit.picosecond,
-                                                     0.002*unit.picoseconds)
-
-        # Platform selection
-        plat_used = None
-        props = {}
-        sim = None
-        if platform_order is None:
-            platform_order = ['OpenCL', 'CUDA', 'CPU']
-        for p_name in platform_order:
-            try:
-                platform_obj = Platform.getPlatformByName(p_name)
-                if p_name == 'CUDA':
-                    props = {'CudaPrecision': 'mixed'}
-                elif p_name == 'OpenCL':
-                    props = {'OpenCLPrecision': 'single'}
-                sim = app.Simulation(fixer.topology, system, integrator, platform_obj, props)
-                plat_used = p_name
-                break
-            except Exception:
-                sim = None
-                continue
-        if sim is None:
-            raise OpenMMException("No suitable OpenMM platform for post-FASPR minimization")
-
-        sim.context.setPositions(fixer.positions)
-        tol = force_tolerance_kj_mol_nm * unit.kilojoule_per_mole / unit.nanometer
-        sim.minimizeEnergy(tolerance=tol, maxIterations=max_iterations)
-        positions = sim.context.getState(getPositions=True).getPositions()
-        with open(pdb_out_path, 'w') as outf:
-            app.PDBFile.writeFile(sim.topology, positions, outf, keepIds=True)
-        # Cleanup
-        try:
-            del sim, integrator, system, fixer
-        except Exception:
-            pass
-        gc.collect()
-        return plat_used, (time.time() - t0)
-    except Exception as e:
-        print(f"[OpenMM-PostFASPR] WARN: Failed post-FASPR H-add/min: {e}")
-        try:
-            shutil.copy(pdb_in_path, pdb_out_path)
-        except Exception:
-            pass
-        return None, (time.time() - t0)
-
-# Removed legacy in-process OpenCL reset helper; subprocess isolation handles context teardown.
-
-# Helper function for k conversion
-def _k_kj_per_nm2(k_kcal_A2):
-    return k_kcal_A2 * 4.184 * 100.0
-
-# Helper function for LJ repulsive force creation
-def _create_lj_repulsive_force(system, lj_rep_base_k_kj_mol, lj_rep_ramp_factors, original_sigmas, nonbonded_force_index):
-    lj_rep_custom_force = None
-    k_rep_lj_param_index = -1
-
-    if lj_rep_base_k_kj_mol > 0 and original_sigmas and lj_rep_ramp_factors:
-        lj_rep_custom_force = openmm.CustomNonbondedForce(
-            "k_rep_lj * (((sigma_particle1 + sigma_particle2) * 0.5 / r)^12)"
-        )
-        
-        initial_k_rep_val = lj_rep_base_k_kj_mol * lj_rep_ramp_factors[0]
-        # Global parameters in OpenMM CustomNonbondedForce expect plain float values for the constant.
-        # The energy expression itself defines how this constant is used with physical units.
-        k_rep_lj_param_index = lj_rep_custom_force.addGlobalParameter("k_rep_lj", float(initial_k_rep_val)) 
-        lj_rep_custom_force.addPerParticleParameter("sigma_particle")
-
-        for sigma_val_nm in original_sigmas:
-            lj_rep_custom_force.addParticle([sigma_val_nm])
-
-        # Check if nonbonded_force_index is valid before trying to get the force
-        if nonbonded_force_index != -1:
-            existing_nb_force = system.getForce(nonbonded_force_index)
-            nb_method = existing_nb_force.getNonbondedMethod()
-            
-            if nb_method in [openmm.NonbondedForce.CutoffPeriodic, openmm.NonbondedForce.CutoffNonPeriodic]:
-                lj_rep_custom_force.setNonbondedMethod(openmm.CustomNonbondedForce.CutoffPeriodic if nb_method == openmm.NonbondedForce.CutoffPeriodic else openmm.CustomNonbondedForce.CutoffNonPeriodic)
-                lj_rep_custom_force.setCutoffDistance(existing_nb_force.getCutoffDistance())
-                if nb_method == openmm.NonbondedForce.CutoffPeriodic:
-                     lj_rep_custom_force.setUseSwitchingFunction(existing_nb_force.getUseSwitchingFunction())
-                     if existing_nb_force.getUseSwitchingFunction():
-                         lj_rep_custom_force.setSwitchingDistance(existing_nb_force.getSwitchingDistance())
-            elif nb_method == openmm.NonbondedForce.NoCutoff:
-                 lj_rep_custom_force.setNonbondedMethod(openmm.CustomNonbondedForce.NoCutoff)
-            
-            for ex_idx in range(existing_nb_force.getNumExceptions()):
-                p1, p2, chargeProd, sigmaEx, epsilonEx = existing_nb_force.getExceptionParameters(ex_idx)
-                lj_rep_custom_force.addExclusion(p1, p2)
-        else:
-            # This case should ideally not be hit if sigmas were extracted,
-            # but as a fallback, don't try to use existing_nb_force.
-            # Default to NoCutoff if we couldn't determine from an existing force.
-            lj_rep_custom_force.setNonbondedMethod(openmm.CustomNonbondedForce.NoCutoff)
-
-        lj_rep_custom_force.setForceGroup(2)
-        system.addForce(lj_rep_custom_force)
-    
-    return lj_rep_custom_force, k_rep_lj_param_index
-
-# Helper function for backbone restraint force creation
-def _create_backbone_restraint_force(system, fixer, restraint_k_kcal_mol_A2):
-    restraint_force = None
-    k_restraint_param_index = -1
-
-    if restraint_k_kcal_mol_A2 > 0:
-        restraint_force = openmm.CustomExternalForce(
-            "0.5 * k_restraint * ( (x-x0)*(x-x0) + (y-y0)*(y-y0) + (z-z0)*(z-z0) )" 
-        )
-        # Global parameters in OpenMM CustomExternalForce also expect plain float values.
-        k_restraint_param_index = restraint_force.addGlobalParameter("k_restraint", _k_kj_per_nm2(restraint_k_kcal_mol_A2))
-        restraint_force.addPerParticleParameter("x0")
-        restraint_force.addPerParticleParameter("y0")
-        restraint_force.addPerParticleParameter("z0")
-
-        initial_positions = fixer.positions 
-        num_bb_restrained = 0
-        BACKBONE_ATOM_NAMES = {"N", "CA", "C", "O"}
-        for atom in fixer.topology.atoms():
-            if atom.name in BACKBONE_ATOM_NAMES:
-                xyz_vec = initial_positions[atom.index].value_in_unit(unit.nanometer) 
-                restraint_force.addParticle(atom.index, [xyz_vec[0], xyz_vec[1], xyz_vec[2]]) 
-                num_bb_restrained +=1
-        
-        if num_bb_restrained > 0:
-            restraint_force.setForceGroup(1)
-            system.addForce(restraint_force)
-        else:
-            restraint_force = None 
-            k_restraint_param_index = -1
-            
-    return restraint_force, k_restraint_param_index
-
 # Chothia/NACCESS-like atomic radii (heavy atoms dominate SASA)
 R_CHOTHIA = {"H": 1.20, "C": 1.70, "N": 1.55, "O": 1.52, "S": 1.80}
 
-# (Unused) _MAX_ASA removed during cleanup.
+# Hydrophobic amino acids set (match PyRosetta hydrophobic/aromatic intent; include GLY)
+HYDROPHOBIC_AA_SET = set("ACFGILMPVWY")
 
-# (Unused) Residue-specific polar carbons mapping removed during cleanup.
-
-@contextlib.contextmanager
-def _suppress_freesasa_warnings():
-    """Temporarily redirect OS-level stderr (fd=2) to suppress FreeSASA warnings."""
-    try:
-        devnull_fd = os.open(os.devnull, os.O_WRONLY)
-        saved_stderr_fd = os.dup(2)
-        os.dup2(devnull_fd, 2)
-        os.close(devnull_fd)
-        try:
-            yield
-        finally:
-            os.dup2(saved_stderr_fd, 2)
-            os.close(saved_stderr_fd)
-    except Exception:
-        # Fallback: no suppression
-        yield
-
-# Hydrophobic amino acids set (match PyRosetta hydrophobic/aromatic intent)
-HYDROPHOBIC_AA_SET = set("ACFILMPVWY")
-
-def _chain_total_sasa(chain_entity):
-    return sum(getattr(atom, "sasa", 0.0) for atom in chain_entity.get_atoms())
+########################################################
+# Shape complementarity
+########################################################
 
 def _calculate_shape_complementarity(pdb_file_path, binder_chain="B", target_chain="A", distance=4.0):
     """
@@ -428,6 +170,30 @@ def _calculate_shape_complementarity(pdb_file_path, binder_chain="B", target_cha
     # Fallback to placeholder to keep pipelines running
     vprint(f"[SC-RS] Fallback placeholder 0.70 for {os.path.basename(pdb_file_path)}")
     return 0.70
+
+########################################################
+# SASA / Surface hydrophobicity
+########################################################
+
+@contextlib.contextmanager
+def _suppress_freesasa_warnings():
+    """Temporarily redirect OS-level stderr (fd=2) to suppress FreeSASA warnings."""
+    try:
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        saved_stderr_fd = os.dup(2)
+        os.dup2(devnull_fd, 2)
+        os.close(devnull_fd)
+        try:
+            yield
+        finally:
+            os.dup2(saved_stderr_fd, 2)
+            os.close(saved_stderr_fd)
+    except Exception:
+        # Fallback: no suppression
+        yield
+
+def _chain_total_sasa(chain_entity):
+    return sum(getattr(atom, "sasa", 0.0) for atom in chain_entity.get_atoms())
 
 def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
     """
@@ -611,7 +377,7 @@ def _compute_sasa_metrics_with_freesasa(pdb_file_path, binder_chain="B", target_
                 # FreeSASA residue selection only: hydrophobic residues / total (no fallback)
                 try:
                     sel_defs = [
-                        "hydro, resn ala+val+leu+ile+met+phe+pro+trp+tyr+cys"
+                        "hydro, resn ala+val+leu+ile+met+phe+pro+trp+tyr+cys+gly"
                     ]
                     with _suppress_freesasa_warnings():
                         sel_area = freesasa.selectArea(sel_defs, structure_binder_only, result_binder_only)  # type: ignore[name-defined]
@@ -666,6 +432,387 @@ def _compute_sasa_metrics_with_freesasa(pdb_file_path, binder_chain="B", target_
     except Exception as e_fsasa:
         print(f"[FreeSASA] ERROR for {pdb_file_path}: {e_fsasa}")
         return _compute_sasa_metrics(pdb_file_path, binder_chain=binder_chain, target_chain=target_chain)
+
+########################################################
+# Interface scoring
+########################################################
+
+def pr_alternative_score_interface(pdb_file, binder_chain="B", target_chain="A", sasa_engine="auto"):
+    """
+    Calculate interface scores using PyRosetta-free alternatives including SCASA shape complementarity.
+    
+    This function provides comprehensive interface scoring without PyRosetta dependency by combining:
+    - Biopython-based SASA calculations
+    - SCASA shape complementarity calculation  
+    - Interface residue identification
+    
+    Parameters
+    ----------
+    pdb_file : str
+        Path to PDB file
+    binder_chain : str
+        Chain ID of the binder
+    sasa_engine : str
+        "auto" (default) prefers FreeSASA if installed, else Biopython.
+        "freesasa" forces FreeSASA (falls back to Biopython on error).
+        "biopython" forces Biopython Shrake-Rupley.
+        
+    Returns
+    -------
+    tuple
+        (interface_scores, interface_AA, interface_residues_pdb_ids_str)
+    """
+    t0_all = time.time()
+    basename = os.path.basename(pdb_file)
+    vprint(f"[Alt-Score] Initiating PyRosetta-free scoring for {basename} (binder={binder_chain}, sasa_engine={sasa_engine})")
+
+    # Get interface residues via Biopython (works without PyRosetta)
+    t0_if = time.time()
+    vprint(f"[Alt-Score] Finding interface residues (hotspot_residues)...")
+    interface_residues_set = hotspot_residues(pdb_file, binder_chain)
+    interface_residues_pdb_ids = [f"{binder_chain}{pdb_res_num}" for pdb_res_num in interface_residues_set.keys()]
+    interface_residues_pdb_ids_str = ','.join(interface_residues_pdb_ids)
+    vprint(f"[Alt-Score] Found {len(interface_residues_pdb_ids)} interface residues in {time.time()-t0_if:.2f}s")
+
+    # Initialize amino acid dictionary for interface composition
+    interface_AA = {aa: 0 for aa in 'ACDEFGHIKLMNPQRSTVWY'}
+    for pdb_res_num, aa_type in interface_residues_set.items():
+        interface_AA[aa_type] += 1
+
+    # SASA-based calculations: select engine
+    t0_sasa = time.time()
+    if str(sasa_engine).lower() == "biopython":
+        vprint(f"[Alt-Score] Computing SASA with Biopython Shrake-Rupley...")
+        surface_hydrophobicity_fraction, \
+        binder_sasa_in_complex, \
+        binder_sasa_monomer, \
+        target_sasa_in_complex, \
+        target_sasa_monomer = _compute_sasa_metrics(
+            pdb_file, binder_chain=binder_chain, target_chain=target_chain 
+        )
+    elif str(sasa_engine).lower() == "freesasa":
+        vprint(f"[Alt-Score] Computing SASA with FreeSASA...")
+        surface_hydrophobicity_fraction, \
+        binder_sasa_in_complex, \
+        binder_sasa_monomer, \
+        target_sasa_in_complex, \
+        target_sasa_monomer = _compute_sasa_metrics_with_freesasa(
+            pdb_file, binder_chain=binder_chain, target_chain=target_chain 
+        )
+    else:
+        if _HAS_FREESASA:
+            vprint(f"[Alt-Score] Computing SASA with FreeSASA (auto)...")
+            surface_hydrophobicity_fraction, \
+            binder_sasa_in_complex, \
+            binder_sasa_monomer, \
+            target_sasa_in_complex, \
+            target_sasa_monomer = _compute_sasa_metrics_with_freesasa(
+                pdb_file, binder_chain=binder_chain, target_chain=target_chain 
+            )
+        else:
+            vprint(f"[Alt-Score] Computing SASA with Biopython (auto fallback)...")
+            surface_hydrophobicity_fraction, \
+            binder_sasa_in_complex, \
+            binder_sasa_monomer, \
+            target_sasa_in_complex, \
+            target_sasa_monomer = _compute_sasa_metrics(
+                pdb_file, binder_chain=binder_chain, target_chain=target_chain 
+            )
+    vprint(f"[Alt-Score] SASA computations finished in {time.time()-t0_sasa:.2f}s")
+
+    # Compute buried SASA: binder-side and total (binder + target)
+    interface_binder_dSASA = max(binder_sasa_monomer - binder_sasa_in_complex, 0.0)
+    interface_target_dSASA = 0.0
+    try:
+        interface_target_dSASA = max(target_sasa_monomer - target_sasa_in_complex, 0.0)
+    except Exception as e_idsasa:
+        print(f"[Biopython-SASA] WARN interface_target_dSASA for {pdb_file}: {e_idsasa}")
+    interface_total_dSASA = interface_binder_dSASA + interface_target_dSASA
+    # Align with PyRosetta: use TOTAL interface dSASA divided by binder SASA IN COMPLEX
+    interface_binder_fraction = (interface_total_dSASA / binder_sasa_in_complex * 100.0) if binder_sasa_in_complex > 0.0 else 0.0
+
+    # Calculate shape complementarity using SCASA
+    t0_sc = time.time()
+    vprint(f"[Alt-Score] Computing shape complementarity (SC)...")
+    interface_sc = _calculate_shape_complementarity(pdb_file, binder_chain, target_chain=target_chain)
+    vprint(f"[Alt-Score] SC computation finished in {time.time()-t0_sc:.2f}s")
+    
+    # Fixed placeholder values for metrics that are not currently computed without PyRosetta
+    # These values are chosen to pass active filters
+    interface_nres = len(interface_residues_pdb_ids)                    # computed from interface residues
+    interface_interface_hbonds = 5                                      # passes >= 3 (active filter)
+    interface_delta_unsat_hbonds = 1                                    # passes <= 4 (active filter)
+    interface_hbond_percentage = 60.0                                   # informational (no active filter)
+    interface_bunsch_percentage = 0.0                                   # informational (no active filter)
+    binder_score = -1.0                                                 # passes <= 0 (active filter) - never results in rejections based on extensive testing
+    interface_packstat = 0.65                                           # informational (no active filter)
+    interface_dG = -10.0                                                # passes <= 0 (active filter) - never results in rejections based on extensive testing
+    interface_dG_SASA_ratio = 0.0                                       # informational (no active filter)
+
+    interface_scores = {
+        'binder_score': binder_score,
+        'surface_hydrophobicity': surface_hydrophobicity_fraction,
+        'interface_sc': interface_sc,
+        'interface_packstat': interface_packstat,
+        'interface_dG': interface_dG,
+        'interface_dSASA': interface_total_dSASA,
+        'interface_dG_SASA_ratio': interface_dG_SASA_ratio,
+        'interface_fraction': interface_binder_fraction,
+        'interface_hydrophobicity': (
+            (sum(interface_AA[aa] for aa in 'ACFGILMPVWY') / interface_nres * 100.0) if interface_nres > 0 else 0.0
+        ),
+        'interface_nres': interface_nres,
+        'interface_interface_hbonds': interface_interface_hbonds,   
+        'interface_hbond_percentage': interface_hbond_percentage,   
+        'interface_delta_unsat_hbonds': interface_delta_unsat_hbonds, 
+        'interface_delta_unsat_hbonds_percentage': interface_bunsch_percentage
+    }
+
+    # Round float values to two decimals for consistency
+    interface_scores = {k: round(v, 2) if isinstance(v, float) else v for k, v in interface_scores.items()}
+
+    vprint(f"[Alt-Score] Completed scoring for {basename} in {time.time()-t0_all:.2f}s")
+    return interface_scores, interface_AA, interface_residues_pdb_ids_str
+
+########################################################
+# OpenMM-based relax and forcefield setup
+########################################################
+
+def _get_openmm_forcefield():
+    global _OPENMM_FORCEFIELD_SINGLETON
+    if _OPENMM_FORCEFIELD_SINGLETON is None:
+        _OPENMM_FORCEFIELD_SINGLETON = app.ForceField('amber14-all.xml', 'implicit/obc2.xml')
+    return _OPENMM_FORCEFIELD_SINGLETON
+
+# Helper function for k conversion
+def _k_kj_per_nm2(k_kcal_A2):
+    return k_kcal_A2 * 4.184 * 100.0
+
+# Helper function for LJ repulsive force creation
+def _create_lj_repulsive_force(system, lj_rep_base_k_kj_mol, lj_rep_ramp_factors, original_sigmas, nonbonded_force_index):
+    lj_rep_custom_force = None
+    k_rep_lj_param_index = -1
+
+    if lj_rep_base_k_kj_mol > 0 and original_sigmas and lj_rep_ramp_factors:
+        lj_rep_custom_force = openmm.CustomNonbondedForce(
+            "k_rep_lj * (((sigma_particle1 + sigma_particle2) * 0.5 / r)^12)"
+        )
+        
+        initial_k_rep_val = lj_rep_base_k_kj_mol * lj_rep_ramp_factors[0]
+        # Global parameters in OpenMM CustomNonbondedForce expect plain float values for the constant.
+        # The energy expression itself defines how this constant is used with physical units.
+        k_rep_lj_param_index = lj_rep_custom_force.addGlobalParameter("k_rep_lj", float(initial_k_rep_val)) 
+        lj_rep_custom_force.addPerParticleParameter("sigma_particle")
+
+        for sigma_val_nm in original_sigmas:
+            lj_rep_custom_force.addParticle([sigma_val_nm])
+
+        # Check if nonbonded_force_index is valid before trying to get the force
+        if nonbonded_force_index != -1:
+            existing_nb_force = system.getForce(nonbonded_force_index)
+            nb_method = existing_nb_force.getNonbondedMethod()
+            
+            if nb_method in [openmm.NonbondedForce.CutoffPeriodic, openmm.NonbondedForce.CutoffNonPeriodic]:
+                lj_rep_custom_force.setNonbondedMethod(openmm.CustomNonbondedForce.CutoffPeriodic if nb_method == openmm.NonbondedForce.CutoffPeriodic else openmm.CustomNonbondedForce.CutoffNonPeriodic)
+                lj_rep_custom_force.setCutoffDistance(existing_nb_force.getCutoffDistance())
+                if nb_method == openmm.NonbondedForce.CutoffPeriodic:
+                     lj_rep_custom_force.setUseSwitchingFunction(existing_nb_force.getUseSwitchingFunction())
+                     if existing_nb_force.getUseSwitchingFunction():
+                         lj_rep_custom_force.setSwitchingDistance(existing_nb_force.getSwitchingDistance())
+            elif nb_method == openmm.NonbondedForce.NoCutoff:
+                 lj_rep_custom_force.setNonbondedMethod(openmm.CustomNonbondedForce.NoCutoff)
+            
+            for ex_idx in range(existing_nb_force.getNumExceptions()):
+                p1, p2, chargeProd, sigmaEx, epsilonEx = existing_nb_force.getExceptionParameters(ex_idx)
+                lj_rep_custom_force.addExclusion(p1, p2)
+        else:
+            # This case should ideally not be hit if sigmas were extracted,
+            # but as a fallback, don't try to use existing_nb_force.
+            # Default to NoCutoff if we couldn't determine from an existing force.
+            lj_rep_custom_force.setNonbondedMethod(openmm.CustomNonbondedForce.NoCutoff)
+
+        lj_rep_custom_force.setForceGroup(2)
+        system.addForce(lj_rep_custom_force)
+    
+    return lj_rep_custom_force, k_rep_lj_param_index
+
+# Helper function for backbone restraint force creation
+def _create_backbone_restraint_force(system, fixer, restraint_k_kcal_mol_A2):
+    restraint_force = None
+    k_restraint_param_index = -1
+
+    if restraint_k_kcal_mol_A2 > 0:
+        restraint_force = openmm.CustomExternalForce(
+            "0.5 * k_restraint * ( (x-x0)*(x-x0) + (y-y0)*(y-y0) + (z-z0)*(z-z0) )" 
+        )
+        # Global parameters in OpenMM CustomExternalForce also expect plain float values.
+        k_restraint_param_index = restraint_force.addGlobalParameter("k_restraint", _k_kj_per_nm2(restraint_k_kcal_mol_A2))
+        restraint_force.addPerParticleParameter("x0")
+        restraint_force.addPerParticleParameter("y0")
+        restraint_force.addPerParticleParameter("z0")
+
+        initial_positions = fixer.positions 
+        num_bb_restrained = 0
+        BACKBONE_ATOM_NAMES = {"N", "CA", "C", "O"}
+        for atom in fixer.topology.atoms():
+            if atom.name in BACKBONE_ATOM_NAMES:
+                xyz_vec = initial_positions[atom.index].value_in_unit(unit.nanometer) 
+                restraint_force.addParticle(atom.index, [xyz_vec[0], xyz_vec[1], xyz_vec[2]]) 
+                num_bb_restrained +=1
+        
+        if num_bb_restrained > 0:
+            restraint_force.setForceGroup(1)
+            system.addForce(restraint_force)
+        else:
+            restraint_force = None 
+            k_restraint_param_index = -1
+            
+    return restraint_force, k_restraint_param_index
+
+# --- FASPR integration helpers ---
+def _resolve_faspr_binary():
+    """Locate the FASPR binary. Search order: env FASPR_BIN → functions/FASPR → PATH.
+
+    Returns
+    -------
+    tuple[str|None, str|None]
+        (binary_path, binary_dir) or (None, None) if not found.
+    """
+    # Env override
+    env_bin = os.environ.get('FASPR_BIN')
+    if env_bin and os.path.isfile(env_bin) and os.access(env_bin, os.X_OK):
+        return env_bin, os.path.dirname(os.path.abspath(env_bin))
+
+    # Repo-provided binary
+    try:
+        module_dir = os.path.dirname(os.path.abspath(__file__))
+        candidate = os.path.join(module_dir, 'FASPR')
+        if os.path.isfile(candidate):
+            # ensure executable bit if possible
+            try:
+                if not os.access(candidate, os.X_OK):
+                    os.chmod(candidate, os.stat(candidate).st_mode | 0o755)
+            except Exception:
+                pass
+            if os.access(candidate, os.X_OK):
+                return candidate, module_dir
+    except Exception:
+        pass
+
+    # PATH lookup
+    which_faspr = shutil.which('FASPR')
+    if which_faspr and os.path.isfile(which_faspr) and os.access(which_faspr, os.X_OK):
+        return which_faspr, os.path.dirname(os.path.abspath(which_faspr))
+
+    return None, None
+
+def _run_faspr(input_pdb_path, output_pdb_path, sequence_txt_path=None, timeout=900):
+    """Run FASPR on an input PDB and write repacked output.
+
+    FASPR requires 'dun2010bbdep.bin' to be colocated with the executable. We set cwd
+    to the FASPR directory so the binary can find its rotamer library.
+
+    Returns True on success, False otherwise.
+    """
+    faspr_bin, faspr_dir = _resolve_faspr_binary()
+    if not faspr_bin or not faspr_dir:
+        print("[FASPR] WARN: FASPR binary not found; skipping repack")
+        return False
+
+    cmd = [faspr_bin, '-i', os.path.abspath(input_pdb_path), '-o', os.path.abspath(output_pdb_path)]
+    if sequence_txt_path and os.path.isfile(sequence_txt_path):
+        cmd.extend(['-s', os.path.abspath(sequence_txt_path)])
+
+    try:
+        vprint(f"[FASPR] Running: {' '.join(cmd)}")
+        proc = subprocess.run(cmd, cwd=faspr_dir, check=True, capture_output=True, text=True, timeout=timeout)
+        if proc.stdout:
+            vprint(f"[FASPR] stdout: {proc.stdout.strip()[:500]}")
+        if proc.stderr:
+            vprint(f"[FASPR] stderr: {proc.stderr.strip()[:500]}")
+        # Verify output exists and is non-empty
+        if os.path.isfile(output_pdb_path) and os.path.getsize(output_pdb_path) > 0:
+            return True
+    except subprocess.TimeoutExpired:
+        print(f"[FASPR] ERROR: Timeout running FASPR on {os.path.basename(input_pdb_path)}")
+    except subprocess.CalledProcessError as e:
+        print(f"[FASPR] ERROR: FASPR failed: rc={e.returncode} stderr={getattr(e, 'stderr', '')}")
+    except Exception as e:
+        print(f"[FASPR] ERROR: {e}")
+    return False
+
+def _add_hydrogens_and_minimize(pdb_in_path, pdb_out_path, platform_order=None,
+                                force_tolerance_kj_mol_nm=0.1, max_iterations=500):
+    """Add hydrogens with PDBFixer and run a short OpenMM minimization, then save PDB.
+
+    Returns
+    -------
+    tuple[str|None, float]
+        (platform_used, seconds)
+    """
+    t0 = time.time()
+    try:
+        fixer = PDBFixer(filename=pdb_in_path)
+        fixer.findMissingResidues()
+        fixer.findNonstandardResidues()
+        fixer.replaceNonstandardResidues()
+        fixer.removeHeterogens(keepWater=False)
+        fixer.findMissingAtoms()
+        fixer.addMissingAtoms()
+        fixer.addMissingHydrogens(7.0)
+
+        forcefield = _get_openmm_forcefield()
+        system = forcefield.createSystem(fixer.topology,
+                                         nonbondedMethod=app.CutoffNonPeriodic,
+                                         nonbondedCutoff=1.0*unit.nanometer,
+                                         constraints=app.HBonds)
+
+        integrator = openmm.LangevinMiddleIntegrator(300*unit.kelvin,
+                                                     1.0/unit.picosecond,
+                                                     0.002*unit.picoseconds)
+
+        # Platform selection
+        plat_used = None
+        props = {}
+        sim = None
+        if platform_order is None:
+            platform_order = ['OpenCL', 'CUDA', 'CPU']
+        for p_name in platform_order:
+            try:
+                platform_obj = Platform.getPlatformByName(p_name)
+                if p_name == 'CUDA':
+                    props = {'CudaPrecision': 'mixed'}
+                elif p_name == 'OpenCL':
+                    props = {'OpenCLPrecision': 'single'}
+                sim = app.Simulation(fixer.topology, system, integrator, platform_obj, props)
+                plat_used = p_name
+                break
+            except Exception:
+                sim = None
+                continue
+        if sim is None:
+            raise OpenMMException("No suitable OpenMM platform for post-FASPR minimization")
+
+        sim.context.setPositions(fixer.positions)
+        tol = force_tolerance_kj_mol_nm * unit.kilojoule_per_mole / unit.nanometer
+        sim.minimizeEnergy(tolerance=tol, maxIterations=max_iterations)
+        positions = sim.context.getState(getPositions=True).getPositions()
+        with open(pdb_out_path, 'w') as outf:
+            app.PDBFile.writeFile(sim.topology, positions, outf, keepIds=True)
+        # Cleanup
+        try:
+            del sim, integrator, system, fixer
+        except Exception:
+            pass
+        gc.collect()
+        return plat_used, (time.time() - t0)
+    except Exception as e:
+        print(f"[OpenMM-PostFASPR] WARN: Failed post-FASPR H-add/min: {e}")
+        try:
+            shutil.copy(pdb_in_path, pdb_out_path)
+        except Exception:
+            pass
+        return None, (time.time() - t0)
 
 def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True, 
                  openmm_max_iterations=1000, # Safety cap per stage to avoid stalls (set 0 for unlimited)
@@ -1187,144 +1334,6 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         except UnboundLocalError:
             return None
 
-def pr_alternative_score_interface(pdb_file, binder_chain="B", target_chain="A", sasa_engine="auto"):
-    """
-    Calculate interface scores using PyRosetta-free alternatives including SCASA shape complementarity.
-    
-    This function provides comprehensive interface scoring without PyRosetta dependency by combining:
-    - Biopython-based SASA calculations
-    - SCASA shape complementarity calculation  
-    - Interface residue identification
-    
-    Parameters
-    ----------
-    pdb_file : str
-        Path to PDB file
-    binder_chain : str
-        Chain ID of the binder
-    sasa_engine : str
-        "auto" (default) prefers FreeSASA if installed, else Biopython.
-        "freesasa" forces FreeSASA (falls back to Biopython on error).
-        "biopython" forces Biopython Shrake-Rupley.
-        
-    Returns
-    -------
-    tuple
-        (interface_scores, interface_AA, interface_residues_pdb_ids_str)
-    """
-    t0_all = time.time()
-    basename = os.path.basename(pdb_file)
-    vprint(f"[Alt-Score] Initiating PyRosetta-free scoring for {basename} (binder={binder_chain}, sasa_engine={sasa_engine})")
-
-    # Get interface residues via Biopython (works without PyRosetta)
-    t0_if = time.time()
-    vprint(f"[Alt-Score] Finding interface residues (hotspot_residues)...")
-    interface_residues_set = hotspot_residues(pdb_file, binder_chain)
-    interface_residues_pdb_ids = [f"{binder_chain}{pdb_res_num}" for pdb_res_num in interface_residues_set.keys()]
-    interface_residues_pdb_ids_str = ','.join(interface_residues_pdb_ids)
-    vprint(f"[Alt-Score] Found {len(interface_residues_pdb_ids)} interface residues in {time.time()-t0_if:.2f}s")
-
-    # Initialize amino acid dictionary for interface composition
-    interface_AA = {aa: 0 for aa in 'ACDEFGHIKLMNPQRSTVWY'}
-    for pdb_res_num, aa_type in interface_residues_set.items():
-        interface_AA[aa_type] += 1
-
-    # SASA-based calculations: select engine
-    t0_sasa = time.time()
-    if str(sasa_engine).lower() == "biopython":
-        vprint(f"[Alt-Score] Computing SASA with Biopython Shrake-Rupley...")
-        surface_hydrophobicity_fraction, \
-        binder_sasa_in_complex, \
-        binder_sasa_monomer, \
-        target_sasa_in_complex, \
-        target_sasa_monomer = _compute_sasa_metrics(
-            pdb_file, binder_chain=binder_chain, target_chain=target_chain 
-        )
-    elif str(sasa_engine).lower() == "freesasa":
-        vprint(f"[Alt-Score] Computing SASA with FreeSASA...")
-        surface_hydrophobicity_fraction, \
-        binder_sasa_in_complex, \
-        binder_sasa_monomer, \
-        target_sasa_in_complex, \
-        target_sasa_monomer = _compute_sasa_metrics_with_freesasa(
-            pdb_file, binder_chain=binder_chain, target_chain=target_chain 
-        )
-    else:
-        if _HAS_FREESASA:
-            vprint(f"[Alt-Score] Computing SASA with FreeSASA (auto)...")
-            surface_hydrophobicity_fraction, \
-            binder_sasa_in_complex, \
-            binder_sasa_monomer, \
-            target_sasa_in_complex, \
-            target_sasa_monomer = _compute_sasa_metrics_with_freesasa(
-                pdb_file, binder_chain=binder_chain, target_chain=target_chain 
-            )
-        else:
-            vprint(f"[Alt-Score] Computing SASA with Biopython (auto fallback)...")
-            surface_hydrophobicity_fraction, \
-            binder_sasa_in_complex, \
-            binder_sasa_monomer, \
-            target_sasa_in_complex, \
-            target_sasa_monomer = _compute_sasa_metrics(
-                pdb_file, binder_chain=binder_chain, target_chain=target_chain 
-            )
-    vprint(f"[Alt-Score] SASA computations finished in {time.time()-t0_sasa:.2f}s")
-
-    # Compute buried SASA: binder-side and total (binder + target)
-    interface_binder_dSASA = max(binder_sasa_monomer - binder_sasa_in_complex, 0.0)
-    interface_target_dSASA = 0.0
-    try:
-        interface_target_dSASA = max(target_sasa_monomer - target_sasa_in_complex, 0.0)
-    except Exception as e_idsasa:
-        print(f"[Biopython-SASA] WARN interface_target_dSASA for {pdb_file}: {e_idsasa}")
-    interface_total_dSASA = interface_binder_dSASA + interface_target_dSASA
-    # Align with PyRosetta: use TOTAL interface dSASA divided by binder SASA IN COMPLEX
-    interface_binder_fraction = (interface_total_dSASA / binder_sasa_in_complex * 100.0) if binder_sasa_in_complex > 0.0 else 0.0
-
-    # Calculate shape complementarity using SCASA
-    t0_sc = time.time()
-    vprint(f"[Alt-Score] Computing shape complementarity (SC)...")
-    interface_sc = _calculate_shape_complementarity(pdb_file, binder_chain, target_chain=target_chain)
-    vprint(f"[Alt-Score] SC computation finished in {time.time()-t0_sc:.2f}s")
-    
-    # Fixed placeholder values for metrics that are not currently computed without PyRosetta
-    # These values are chosen to pass active filters
-    interface_nres = len(interface_residues_pdb_ids)                    # computed from interface residues
-    interface_interface_hbonds = 5                                      # passes >= 3 (active filter)
-    interface_delta_unsat_hbonds = 1                                    # passes <= 4 (active filter)
-    interface_hbond_percentage = 60.0                                   # informational (no active filter)
-    interface_bunsch_percentage = 0.0                                   # informational (no active filter)
-    binder_score = -1.0                                                 # passes <= 0 (active filter) - never results in rejections based on extensive testing
-    interface_packstat = 0.65                                           # informational (no active filter)
-    interface_dG = -10.0                                                # passes <= 0 (active filter) - never results in rejections based on extensive testing
-    interface_dG_SASA_ratio = 0.0                                       # informational (no active filter)
-
-    interface_scores = {
-        'binder_score': binder_score,
-        'surface_hydrophobicity': surface_hydrophobicity_fraction,
-        'interface_sc': interface_sc,
-        'interface_packstat': interface_packstat,
-        'interface_dG': interface_dG,
-        'interface_dSASA': interface_total_dSASA,
-        'interface_dG_SASA_ratio': interface_dG_SASA_ratio,
-        'interface_fraction': interface_binder_fraction,
-        'interface_hydrophobicity': (
-            (sum(interface_AA[aa] for aa in 'ACFILMPVWY') / interface_nres * 100.0) if interface_nres > 0 else 0.0
-        ),
-        'interface_nres': interface_nres,
-        'interface_interface_hbonds': interface_interface_hbonds,   
-        'interface_hbond_percentage': interface_hbond_percentage,   
-        'interface_delta_unsat_hbonds': interface_delta_unsat_hbonds, 
-        'interface_delta_unsat_hbonds_percentage': interface_bunsch_percentage
-    }
-
-    # Round float values to two decimals for consistency
-    interface_scores = {k: round(v, 2) if isinstance(v, float) else v for k, v in interface_scores.items()}
-
-    vprint(f"[Alt-Score] Completed scoring for {basename} in {time.time()-t0_all:.2f}s")
-    return interface_scores, interface_AA, interface_residues_pdb_ids_str
-
-
 def openmm_relax_subprocess(pdb_file_path, output_pdb_path, use_gpu_relax=True, timeout=None, max_attempts=3):
     """Run openmm_relax in a fresh Python process to fully reset OpenCL context per run.
     Retries if the child fell back to copying input (soft failure) or if the child crashes (hard failure).
@@ -1404,6 +1413,9 @@ def openmm_relax_subprocess(pdb_file_path, output_pdb_path, use_gpu_relax=True, 
 
     return None
 
+########################################################
+# Main for testing
+########################################################
 
 if __name__ == "__main__":
     import argparse
