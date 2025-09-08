@@ -1,21 +1,29 @@
 """
 Alternative implementations for PyRosetta functionality.
 
-This module provides OpenMM and Biopython-based alternatives to PyRosetta functions,
+This module provides OpenMM, Biopython, and FASPR-based alternatives to PyRosetta functions,
 enabling BindCraft to run without PyRosetta installation. These implementations
 aim to provide similar functionality with reasonable approximations where exact
 replication is not possible.
 
 Functions:
-    openmm_relax: Structure relaxation using OpenMM
+    openmm_relax: Structure relaxation using OpenMM with optional FASPR side-chain repacking
     openmm_relax_subprocess: Run relax in a fresh process to isolate OpenCL context
-    pr_alternative_score_interface: Interface scoring using Biopython
-    
+    pr_alternative_score_interface: Interface scoring using Biopython and FreeSASA
+    _calculate_shape_complementarity: Shape complementarity calculation using sc-rs or fallback
+    _compute_sasa_metrics: SASA calculations using Biopython or FreeSASA
+    _compute_sasa_metrics_with_freesasa: FreeSASA-based SASA calculations
+    _run_faspr: Helper to run FASPR side-chain packing
+    _resolve_faspr_binary: Locate FASPR binary
+    _add_hydrogens_and_minimize: Add hydrogens and minimize post-FASPR structures
+
 Helper Functions:
     _get_openmm_forcefield: Singleton ForceField instance
     _create_lj_repulsive_force: Custom LJ repulsion for clash resolution
     _create_backbone_restraint_force: Backbone position restraints
     _chain_total_sasa: Calculate total SASA for a chain
+    _suppress_freesasa_warnings: Suppress FreeSASA warnings
+    hotspot_residues: Interface residue identification
 
 Rationale:
     In long runs we observed sporadic OpenCL context failures after many relax calls,
@@ -814,28 +822,30 @@ def _add_hydrogens_and_minimize(pdb_in_path, pdb_out_path, platform_order=None,
             pass
         return None, (time.time() - t0)
 
-def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True, 
+def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                  openmm_max_iterations=1000, # Safety cap per stage to avoid stalls (set 0 for unlimited)
                  # Default force tolerances for ramp stages (kJ/mol/nm)
-                 openmm_ramp_force_tolerance_kj_mol_nm=2.0, 
+                 openmm_ramp_force_tolerance_kj_mol_nm=2.0,
                  openmm_final_force_tolerance_kj_mol_nm=0.1,
-                 restraint_k_kcal_mol_A2=3.0, 
+                 restraint_k_kcal_mol_A2=3.0,
                  restraint_ramp_factors=(1.0, 0.4, 0.0), # 3-stage restraint ramp factors
-                 md_steps_per_shake=5000, # MD steps for each shake (applied only to first two stages)
+                 md_steps_per_shake=1000, # MD steps for each shake (applied only to first two stages)
                  lj_rep_base_k_kj_mol=10.0, # Base strength for extra LJ repulsion (kJ/mol)
                  lj_rep_ramp_factors=(0.0, 1.5, 3.0), # 3-stage LJ repulsion ramp factors (soft → hard)
                  perf_report=None, # Optional dict to populate with detailed timing/energy metrics
                  override_platform_order=None,
-                 use_faspr_repack=False, # If True, run FASPR repack after relax
+                 use_faspr_repack=True, # If True, run FASPR repack after relax (default: enabled)
                  post_faspr_minimize=True # If True, add H and short standardized min after FASPR
                  ):
     """
     Relaxes a PDB structure using OpenMM with L-BFGS minimizer.
     Uses PDBFixer to prepare the structure first.
-    Applies backbone heavy-atom harmonic restraints (ramped down using restraint_ramp_factors) 
+    Applies backbone heavy-atom harmonic restraints (ramped down using restraint_ramp_factors)
     and uses OBC2 implicit solvent.
     Includes an additional ramped LJ-like repulsive force (using lj_rep_ramp_factors) to help with initial clashes.
     Includes short MD shakes for the first two ramp stages only (speed optimization).
+    Optionally integrates FASPR (Fast, Accurate, and Deterministic Protein Side-chain Packing) for side-chain repacking after relaxation,
+    followed by hydrogen addition and a short minimization to standardize the final structure.
     Uses accept-to-best position bookkeeping across all stages.
     Aligns to original and copies B-factors.
     
