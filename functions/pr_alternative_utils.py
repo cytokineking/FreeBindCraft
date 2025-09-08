@@ -733,11 +733,8 @@ def _run_faspr(input_pdb_path, output_pdb_path, sequence_txt_path=None, timeout=
 
     try:
         vprint(f"[FASPR] Running: {' '.join(cmd)}")
+        # Capture output but do not emit banner/stdout; only report on errors via exceptions below.
         proc = subprocess.run(cmd, cwd=faspr_dir, check=True, capture_output=True, text=True, timeout=timeout)
-        if proc.stdout:
-            vprint(f"[FASPR] stdout: {proc.stdout.strip()[:500]}")
-        if proc.stderr:
-            vprint(f"[FASPR] stderr: {proc.stderr.strip()[:500]}")
         # Verify output exists and is non-empty
         if os.path.isfile(output_pdb_path) and os.path.getsize(output_pdb_path) > 0:
             return True
