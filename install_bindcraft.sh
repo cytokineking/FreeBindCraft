@@ -5,10 +5,11 @@
 pkg_manager='conda'
 cuda=''
 install_pyrosetta=true
+fix_channels=false
 
 # Define the short and long options
-OPTIONS=p:c:n
-LONGOPTIONS=pkg_manager:,cuda:,no-pyrosetta
+OPTIONS=p:c:nf
+LONGOPTIONS=pkg_manager:,cuda:,no-pyrosetta,fix-channels
 
 # Parse the command-line options
 PARSED=$(getopt --options=$OPTIONS --longoptions=$LONGOPTIONS --name "$0" -- "$@")
@@ -29,6 +30,10 @@ while true; do
       install_pyrosetta=false
       shift
       ;;
+    -f|--fix-channels)
+      fix_channels=true
+      shift
+      ;;
     --)
       shift
       break
@@ -44,6 +49,7 @@ done
 echo -e "Package manager: $pkg_manager"
 echo -e "CUDA: $cuda"
 echo -e "Install PyRosetta: $install_pyrosetta"
+echo -e "Fix channels: $fix_channels"
 
 ############################################################################################################
 ############################################################################################################
@@ -54,6 +60,20 @@ SECONDS=0
 install_dir=$(pwd)
 CONDA_BASE=$(conda info --base 2>/dev/null) || { echo -e "Error: conda is not installed or cannot be initialised."; exit 1; }
 echo -e "Conda is installed at: $CONDA_BASE"
+
+# Apply channel configuration fix if requested
+if [ "$fix_channels" = true ]; then
+    echo -e "Applying channel configuration fix for dependency resolution issues\n"
+    conda config --remove channels defaults 2>/dev/null || true
+    conda config --prepend channels conda-forge
+    conda config --append channels nvidia
+    conda config --append channels https://conda.rosettacommons.org
+    conda config --set channel_priority strict
+    # Install libmamba solver if available
+    conda install -n base conda-libmamba-solver -y 2>/dev/null || echo -e "Warning: Could not install libmamba solver"
+    conda config --set solver libmamba 2>/dev/null || echo -e "Warning: Could not set libmamba solver"
+    echo -e "Channel configuration applied\n"
+fi
 
 ### BindCraft install begin, create base environment
 echo -e "Installing BindCraft environment\n"
@@ -202,3 +222,6 @@ echo -e "Successfully finished BindCraft installation!\n"
 echo -e "Activate environment using command: \"$pkg_manager activate BindCraft\""
 echo -e "\n"
 echo -e "Installation took $(($t / 3600)) hours, $((($t / 60) % 60)) minutes and $(($t % 60)) seconds."
+echo -e "\n"
+echo -e "If you encounter 'Solving environment' issues, try rerunning with:"
+echo -e "  ./install_bindcraft.sh --fix-channels [other options]"

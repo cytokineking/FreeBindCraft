@@ -37,6 +37,7 @@ For the motivation behind the PyRosetta bypass, implementation details (OpenMM r
     *   `--cuda CUDAVERSION`: Specify your CUDA version (e.g., '12.4').
     *   `--pkg_manager MANAGER`: Specify 'mamba' or 'conda' (default: 'conda').
     *   `--no-pyrosetta`: **Use this flag to install without PyRosetta.**
+    *   `--fix-channels`: Fix conda channel configuration to resolve dependency conflicts (recommended if experiencing installation issues).
 
     **Example: PyRosetta-Free Installation**
     ```bash
