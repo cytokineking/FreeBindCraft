@@ -923,32 +923,43 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                 vprint(f"[OpenMM-Relax] Segment-aware lengths: {_lengths}")
                 if _chain_ids_list and _lengths and sum(1 for l in _lengths if l > 0) >= 2:
                     import string, tempfile
-                    _letters = [c for c in string.ascii_uppercase if c not in ('A','B')]
-                    _new_chain_ids = _letters[:len(_chain_ids_list)]
-                    # If segments exceed alphabet, extend with digits then lowercase
-                    if len(_new_chain_ids) < len(_lengths):
-                        extra = []
-                        for ch in '0123456789abcdefghijklmnopqrstuvwxyz':
-                            if ch not in ('A','B'):
-                                extra.append(ch)
-                            if len(_letters) + len(extra) >= len(_lengths):
-                                break
-                        _new_chain_ids = _letters + extra[:max(0, len(_lengths) - len(_letters))]
-                    vprint(f"[OpenMM-Relax] De-concatenating chain A into {len(_lengths)} segments: {_new_chain_ids[:min(6,len(_new_chain_ids))]}{'...' if len(_new_chain_ids)>6 else ''}")
+                    # Build exactly N chain IDs (exclude A/B), prioritizing uppercase then digits then lowercase
+                    N = len(_lengths)
+                    pool = [c for c in string.ascii_uppercase if c not in ('A','B')]
+                    pool += list('0123456789')
+                    pool += list('abcdefghijklmnopqrstuvwxyz')
+                    if len(pool) < N:
+                        raise RuntimeError(f"Insufficient chain IDs for {N} segments")
+                    _new_chain_ids = pool[:N]
+                    vprint(f"[OpenMM-Relax] De-concatenating chain A into {N} segments: {_new_chain_ids[:min(6,N)]}{'...' if N>6 else ''}")
                     _tmpf = tempfile.NamedTemporaryFile(suffix='.pdb', delete=False)
                     _tmpf.close()
                     _deconcat_tmp = _tmpf.name
                     split_chain_into_subchains(pdb_file_path, source_chain_id='A', subchain_lengths=_lengths, new_chain_ids=_new_chain_ids, output_path=_deconcat_tmp)
                     vprint(f"[OpenMM-Relax] De-concatenated PDB written to: {_deconcat_tmp}")
+                    # Sanity check non-empty temp file; if empty, skip de-concatenation
+                    try:
+                        if (not os.path.isfile(_deconcat_tmp)) or os.path.getsize(_deconcat_tmp) == 0:
+                            vprint(f"[OpenMM-Relax] De-concatenation produced empty file; skipping and using original input")
+                            _deconcat_tmp = None
+                            _reconcat_spec = None
+                            pdb_for_fixer = pdb_file_path
+                        else:
+                            pdb_for_fixer = _deconcat_tmp
+                    except Exception:
+                        _deconcat_tmp = None
+                        _reconcat_spec = None
+                        pdb_for_fixer = pdb_file_path
                     # Debug: save de-concatenated PDB next to final output
                     try:
                         if _dbg_deconcat:
-                            shutil.copy(_deconcat_tmp, _dbg_deconcat)
-                            vprint(f"[OpenMM-Relax] Debug de-concat saved: {_dbg_deconcat}")
+                            if _deconcat_tmp and os.path.isfile(_deconcat_tmp) and os.path.getsize(_deconcat_tmp) > 0:
+                                shutil.copy(_deconcat_tmp, _dbg_deconcat)
+                                vprint(f"[OpenMM-Relax] Debug de-concat saved: {_dbg_deconcat}")
                     except Exception:
                         pass
-                    _reconcat_spec = (_new_chain_ids, 'A')
-                    pdb_for_fixer = _deconcat_tmp
+                    if _deconcat_tmp:
+                        _reconcat_spec = (_new_chain_ids, 'A')
                 else:
                     vprint("[OpenMM-Relax] Single chain or no valid lengths - skipping de-concatenation")
             else:

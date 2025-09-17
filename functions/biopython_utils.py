@@ -631,6 +631,7 @@ def split_chain_into_subchains(pdb_in_path: str,
         lengths = [int(x) for x in subchain_lengths if int(x) > 0]
         chain_names = [str(x) for x in new_chain_ids]
         if not lengths or len(lengths) != len(chain_names):
+            vprint(f"[BioPDB] split_chain_into_subchains: invalid lengths/ids (len(lengths)={len(lengths)}, len(ids)={len(chain_names)})")
             return
 
         with open(pdb_in_path, 'r') as fin:
@@ -674,7 +675,8 @@ def split_chain_into_subchains(pdb_in_path: str,
         out_path = output_path if output_path else pdb_in_path
         with open(out_path, 'w') as fout:
             fout.writelines(out_lines)
-    except Exception:
+    except Exception as e:
+        vprint(f"[BioPDB] split_chain_into_subchains failed: {e}")
         return
 
 
