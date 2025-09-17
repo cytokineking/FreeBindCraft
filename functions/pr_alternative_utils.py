@@ -8,6 +8,8 @@ replication is not possible.
 
 Functions:
     openmm_relax: Structure relaxation using OpenMM with optional FASPR side-chain repacking
+                 Includes de-concatenation/re-concatenation logic to prevent unintended
+                 peptide bond formation between biologically distinct chains/segments
     openmm_relax_subprocess: Run relax in a fresh process to isolate OpenCL context
     pr_alternative_score_interface: Interface scoring using Biopython and FreeSASA
     _calculate_shape_complementarity: Shape complementarity calculation using sc-rs or fallback
@@ -24,6 +26,28 @@ Helper Functions:
     _chain_total_sasa: Calculate total SASA for a chain
     _suppress_freesasa_warnings: Suppress FreeSASA warnings
     hotspot_residues: Interface residue identification
+
+Chain Manipulation Functions (from biopython_utils):
+    compute_target_segment_lengths: Analyze original PDB to determine segment boundaries
+                                   within each biological chain based on residue gaps
+    split_chain_into_subchains: Split a concatenated chain into separate chains based
+                               on provided segment lengths and new chain IDs
+    merge_chains_into_single: Merge multiple chains back into a single chain for
+                             downstream compatibility with BindCraft scoring
+
+Chain Handling:
+    ColabDesign concatenates target chains into a single chain 'A', which can cause OpenMM
+    to inappropriately infer peptide bonds between biologically distinct chains or across gaps
+    in discontinuous segments. To prevent this, we implement:
+    
+    1. De-concatenation: Split chain 'A' into separate chains (C, D, E, etc.) based on the
+       original biological chains and any discontinuous segments within each chain
+    2. Structure Processing: Run PDBFixer, OpenMM relaxation, and FASPR on the de-concatenated
+       structure to maintain proper chain separation
+    3. Re-concatenation: Merge the processed chains back into chain 'A' for downstream scoring
+    
+    This approach ensures that OpenMM treats each biological unit as a separate entity while
+    maintaining compatibility with the existing BindCraft scoring pipeline.
 
 Rationale:
     In long runs we observed sporadic OpenCL context failures after many relax calls,
@@ -837,15 +861,42 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                  ):
     """
     Relaxes a PDB structure using OpenMM with L-BFGS minimizer.
-    Uses PDBFixer to prepare the structure first.
-    Applies backbone heavy-atom harmonic restraints (ramped down using restraint_ramp_factors)
-    and uses OBC2 implicit solvent.
-    Includes an additional ramped LJ-like repulsive force (using lj_rep_ramp_factors) to help with initial clashes.
-    Includes short MD shakes for the first two ramp stages only (speed optimization).
-    Optionally integrates FASPR (Fast, Accurate, and Deterministic Protein Side-chain Packing) for side-chain repacking after relaxation,
-    followed by hydrogen addition and a short minimization to standardize the final structure.
-    Uses accept-to-best position bookkeeping across all stages.
-    Aligns to original and copies B-factors.
+    
+    Chain Handling:
+    ---------------
+    To prevent OpenMM/PDBFixer from inappropriately connecting biologically distinct chains
+    or segments, this function implements a de-concatenation/re-concatenation strategy:
+    
+    1. De-concatenation: If BINDCRAFT_STARTING_PDB and BINDCRAFT_TARGET_CHAINS environment
+       variables are set, splits the concatenated chain 'A' into separate chains based on:
+       - Original biological chain boundaries from the starting PDB
+       - Discontinuous segments within each biological chain (residue number gaps)
+       
+    2. Structure Processing: Runs PDBFixer, OpenMM relaxation, and optional FASPR on the
+       de-concatenated structure, maintaining proper chain separation throughout
+       
+    3. Re-concatenation: Merges all processed chains back into chain 'A' for compatibility
+       with downstream BindCraft scoring
+    
+    Processing Steps:
+    ----------------
+    - Uses PDBFixer to prepare the structure (add missing atoms, hydrogens, etc.)
+    - Applies backbone heavy-atom harmonic restraints (ramped down using restraint_ramp_factors)
+    - Uses OBC2 implicit solvent with additional ramped LJ-like repulsive force for clash resolution
+    - Includes short MD shakes for the first two ramp stages only (speed optimization)
+    - Optionally integrates FASPR for side-chain repacking after relaxation
+    - Follows with hydrogen addition and short minimization to standardize final structure
+    - Uses accept-to-best position bookkeeping across all stages
+    - Aligns final structure to input and copies B-factors
+    - Preserves disulfide bonds and other connectivity records in final output
+    
+    Debug Output:
+    ------------
+    When BINDCRAFT_DEBUG_PDBS=1, saves intermediate structures:
+    - .debug_deconcat.pdb: After de-concatenation (if applicable)
+    - .debug_pdbfixer.pdb: After PDBFixer preparation
+    - .debug_post_initial_relax.pdb: After OpenMM relaxation
+    - .debug_post_faspr.pdb: After FASPR repacking (if enabled)
     
     Returns
     -------
@@ -862,7 +913,8 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         _dbg_base = os.path.splitext(os.path.basename(output_pdb_path))[0]
         _dbg_deconcat = os.path.join(_dbg_dir, f"{_dbg_base}.debug_deconcat.pdb")
         _dbg_pdbfixer = os.path.join(_dbg_dir, f"{_dbg_base}.debug_pdbfixer.pdb")
-        _dbg_relaxed_premerge = os.path.join(_dbg_dir, f"{_dbg_base}.debug_relaxed_premerge.pdb")
+        _dbg_post_initial_relax = os.path.join(_dbg_dir, f"{_dbg_base}.debug_post_initial_relax.pdb")
+        _dbg_post_faspr = os.path.join(_dbg_dir, f"{_dbg_base}.debug_post_faspr.pdb")
     except Exception:
         _dbg_deconcat = None
         _dbg_pdbfixer = None
@@ -952,7 +1004,7 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                         pdb_for_fixer = pdb_file_path
                     # Debug: save de-concatenated PDB next to final output
                     try:
-                        if _dbg_deconcat:
+                        if _dbg_deconcat and os.environ.get('BINDCRAFT_DEBUG_PDBS') == '1':
                             if _deconcat_tmp and os.path.isfile(_deconcat_tmp) and os.path.getsize(_deconcat_tmp) > 0:
                                 shutil.copy(_deconcat_tmp, _dbg_deconcat)
                                 vprint(f"[OpenMM-Relax] Debug de-concat saved: {_dbg_deconcat}")
@@ -979,7 +1031,7 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         vprint(f"[OpenMM-Relax] PDBFixer processing completed on: {pdb_for_fixer}")
         # Debug: write PDBFixer output
         try:
-            if _dbg_pdbfixer:
+            if _dbg_pdbfixer and os.environ.get('BINDCRAFT_DEBUG_PDBS') == '1':
                 with open(_dbg_pdbfixer, 'w') as _df:
                     app.PDBFile.writeFile(fixer.topology, fixer.positions, _df, keepIds=True)
                 vprint(f"[OpenMM-Relax] Debug PDBFixer output saved: {_dbg_pdbfixer}")
@@ -1277,9 +1329,9 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         vprint(f"[OpenMM-Relax] OpenMM relaxation completed, saved to: {output_pdb_path}")
         # Debug: relaxed pre-merge
         try:
-            if _dbg_relaxed_premerge:
-                shutil.copy(output_pdb_path, _dbg_relaxed_premerge)
-                vprint(f"[OpenMM-Relax] Debug relaxed pre-merge saved: {_dbg_relaxed_premerge}")
+            if _dbg_post_initial_relax and os.environ.get('BINDCRAFT_DEBUG_PDBS') == '1':
+                shutil.copy(output_pdb_path, _dbg_post_initial_relax)
+                vprint(f"[OpenMM-Relax] Debug post-initial-relax saved: {_dbg_post_initial_relax}")
         except Exception:
             pass
 
@@ -1340,6 +1392,13 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                                 app.PDBFile.writeFile(fixer2.topology, fixer2.positions, f2, keepIds=True)
                         except Exception:
                             shutil.copy(tmp_faspr_out, output_pdb_path)
+                # Debug: save after FASPR
+                try:
+                    if _dbg_post_faspr and os.environ.get('BINDCRAFT_DEBUG_PDBS') == '1':
+                        shutil.copy(output_pdb_path, _dbg_post_faspr)
+                        vprint(f"[OpenMM-Relax] Debug post-FASPR saved: {_dbg_post_faspr}")
+                except Exception:
+                    pass
                 # Cleanup temp
                 try:
                     shutil.rmtree(tmp_dir)

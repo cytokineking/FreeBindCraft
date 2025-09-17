@@ -104,6 +104,7 @@ If you run BindCraft without `--settings` in a terminal (TTY) or pass `--interac
 You can further control runtime behavior with these flags:
 
 - `--verbose`: Enable detailed timing/progress logs for BindCraft internals.
+- '--debug-pdbs': Write intermediate PDBs from OpenMM relax (`.debug_deconcat.pdb`, `.debug_pdbfixer.pdb`, `.debug_post_initial_relax.pdb`, `.debug_post_faspr.pdb`)
 - `--no-plots`: Disable saving design trajectory plots (overrides advanced settings).
 - `--no-animations`: Disable saving trajectory animations (overrides advanced settings).
 

@@ -78,6 +78,8 @@ parser.add_argument('--no-pyrosetta', action='store_true',
                     help='Run without PyRosetta (skips relaxation and PyRosetta-based scoring)')
 parser.add_argument('--verbose', action='store_true',
                     help='Enable detailed timing/progress logs')
+parser.add_argument('--debug-pdbs', action='store_true',
+                    help='Write intermediate debug PDBs during OpenMM relax (deconcat, PDBFixer, post-initial-relax, post-FASPR)')
 parser.add_argument('--no-plots', action='store_true',
                     help='Disable saving design trajectory plots (overrides advanced settings)')
 parser.add_argument('--no-animations', action='store_true',
@@ -439,10 +441,11 @@ settings_file = os.path.basename(settings_path).split('.')[0]
 filters_file = os.path.basename(filters_path).split('.')[0]
 advanced_file = os.path.basename(advanced_path).split('.')[0]
 
-# Provide context to OpenMM relax for de-concatenation/re-concatenation
+# Provide context to OpenMM relax for de-concatenation/re-concatenation and debug PDBs
 try:
     os.environ['BINDCRAFT_STARTING_PDB'] = os.path.abspath(os.path.expanduser(target_settings["starting_pdb"]))
     os.environ['BINDCRAFT_TARGET_CHAINS'] = str(target_settings.get("chains", "A"))
+    os.environ['BINDCRAFT_DEBUG_PDBS'] = '1' if args.debug_pdbs else '0'
 except Exception:
     pass
 
