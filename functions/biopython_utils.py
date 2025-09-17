@@ -495,3 +495,164 @@ def biopython_align_all_ca(reference_pdb_path: str, pdb_to_align_path: str):
         clean_pdb(pdb_to_align_path)
     except Exception as e:
         print(f"Error saving aligned PDB file {pdb_to_align_path}: {e}")
+
+
+# -------------------------------
+# Chain concat/de-concat helpers
+# -------------------------------
+def compute_target_chain_lengths(starting_pdb_path: str, chains: str):
+    """
+    Compute the number of standard amino acid residues in each of the original
+    target chains from the starting PDB, preserving input order.
+
+    Parameters
+    ----------
+    starting_pdb_path : str
+        Path to the original input PDB that contains true target chains
+        (e.g., "A,B" for a two-chain target).
+    chains : str
+        Comma-separated chain IDs string, e.g., "A,B" or "A,B,C".
+
+    Returns
+    -------
+    list[int]
+        List of per-chain residue counts for standard amino acids.
+    """
+    try:
+        chain_ids = [c.strip() for c in str(chains).split(',') if c and str(c).strip()]
+        if not chain_ids:
+            return []
+
+        parser = PDBParser(QUIET=True)
+        structure = parser.get_structure('start', starting_pdb_path)
+        model = structure[0]
+
+        lengths = []
+        for cid in chain_ids:
+            if cid not in model:
+                lengths.append(0)
+                continue
+            chain = model[cid]
+            count = 0
+            for residue in chain:
+                if is_aa(residue, standard=True):
+                    count += 1
+            lengths.append(int(count))
+        return lengths
+    except Exception:
+        return []
+
+
+def split_chain_into_subchains(pdb_in_path: str,
+                               source_chain_id: str,
+                               subchain_lengths,
+                               new_chain_ids,
+                               output_path: str = None):
+    """
+    Reassign chain IDs within a single source chain into multiple subchains
+    according to provided subchain lengths, writing a new PDB.
+
+    Counting is performed over unique residue identifiers as they appear in
+    the file (resseq, icode) for ATOM records belonging to source_chain_id.
+
+    Parameters
+    ----------
+    pdb_in_path : str
+        Input PDB path containing the concatenated target as source_chain_id.
+    source_chain_id : str
+        Chain ID to split (e.g., 'A').
+    subchain_lengths : iterable[int]
+        Residue counts per subchain in order, e.g., [l1, l2, l3].
+    new_chain_ids : iterable[str]
+        New chain IDs of equal length to subchain_lengths, e.g., ['C','D','E'].
+    output_path : str, optional
+        If provided, write to this path; otherwise, overwrite input in-place.
+    """
+    try:
+        lengths = [int(x) for x in subchain_lengths if int(x) > 0]
+        chain_names = [str(x) for x in new_chain_ids]
+        if not lengths or len(lengths) != len(chain_names):
+            return
+
+        with open(pdb_in_path, 'r') as fin:
+            lines = fin.readlines()
+
+        out_lines = []
+        residue_counter = 0
+        current_res_id = None  # (resseq, icode)
+        # Precompute cumulative boundaries
+        cum_bounds = []
+        running = 0
+        for l in lengths:
+            running += l
+            cum_bounds.append(running)
+
+        def subchain_index_for(count):
+            for idx, bound in enumerate(cum_bounds):
+                if count <= bound:
+                    return idx
+            return len(cum_bounds) - 1
+
+        for ln in lines:
+            if ln.startswith(('ATOM', 'HETATM')) and len(ln) >= 26:
+                ch = ln[21:22]
+                if ch == source_chain_id:
+                    # Parse residue id
+                    try:
+                        resseq = int(ln[22:26])
+                    except Exception:
+                        resseq = None
+                    icode = ln[26:27]
+                    resid = (resseq, icode)
+                    if resid != current_res_id:
+                        residue_counter += 1
+                        current_res_id = resid
+                    idx = subchain_index_for(residue_counter)
+                    new_ch = chain_names[idx] if 0 <= idx < len(chain_names) else chain_names[-1]
+                    ln = ln[:21] + new_ch[:1] + ln[22:]
+            out_lines.append(ln)
+
+        out_path = output_path if output_path else pdb_in_path
+        with open(out_path, 'w') as fout:
+            fout.writelines(out_lines)
+    except Exception:
+        return
+
+
+def merge_chains_into_single(pdb_in_path: str,
+                             source_chain_ids,
+                             dest_chain_id: str = 'A',
+                             output_path: str = None):
+    """
+    Reassign a set of chain IDs back into a single destination chain ID,
+    writing the result to output_path or overwriting in-place.
+
+    Parameters
+    ----------
+    pdb_in_path : str
+        Input PDB path.
+    source_chain_ids : iterable[str]
+        Chain IDs to merge (e.g., ['C','D','E']).
+    dest_chain_id : str
+        Destination chain ID (e.g., 'A').
+    output_path : str, optional
+        If provided, write to this path; otherwise overwrite input.
+    """
+    try:
+        src_set = set(str(x) for x in source_chain_ids if str(x))
+        if not src_set:
+            return
+        with open(pdb_in_path, 'r') as fin:
+            lines = fin.readlines()
+        out_lines = []
+        for ln in lines:
+            if ln.startswith(('ATOM', 'HETATM')) and len(ln) >= 22:
+                ch = ln[21:22]
+                if ch in src_set:
+                    ln = ln[:21] + dest_chain_id[:1] + ln[22:]
+            out_lines.append(ln)
+        out_path = output_path if output_path else pdb_in_path
+        with open(out_path, 'w') as fout:
+            fout.writelines(out_lines)
+    except Exception:
+        return

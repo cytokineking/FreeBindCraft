@@ -45,6 +45,7 @@ from itertools import zip_longest
 from .generic_utils import clean_pdb
 from .logging_utils import vprint
 from .biopython_utils import hotspot_residues, biopython_align_all_ca
+from .biopython_utils import compute_target_chain_lengths, split_chain_into_subchains, merge_chains_into_single
 
 # OpenMM imports
 import openmm
@@ -893,7 +894,32 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
     try:
         # 1. Prepare the PDB structure using PDBFixer
         t_prep_start = time.time()
-        fixer = PDBFixer(filename=pdb_file_path)
+        # If the input likely has ColabDesign-concatenated target in chain A,
+        # de-concatenate into explicit chains before running PDBFixer so OpenMM
+        # cannot form peptide bonds across biological chain boundaries.
+        pdb_for_fixer = pdb_file_path
+        _deconcat_tmp = None
+        _reconcat_spec = None
+        try:
+            _starting_pdb_env = os.environ.get('BINDCRAFT_STARTING_PDB')
+            _starting_chains_env = os.environ.get('BINDCRAFT_TARGET_CHAINS')
+            if _starting_pdb_env and os.path.isfile(_starting_pdb_env) and _starting_chains_env:
+                _chain_ids_list = [c.strip() for c in _starting_chains_env.split(',') if c.strip()]
+                _lengths = compute_target_chain_lengths(_starting_pdb_env, _starting_chains_env)
+                if _chain_ids_list and _lengths and sum(1 for l in _lengths if l > 0) >= 2:
+                    import string, tempfile
+                    _letters = [c for c in string.ascii_uppercase if c not in ('A','B')]
+                    _new_chain_ids = _letters[:len(_chain_ids_list)]
+                    _tmpf = tempfile.NamedTemporaryFile(suffix='.pdb', delete=False)
+                    _tmpf.close()
+                    _deconcat_tmp = _tmpf.name
+                    split_chain_into_subchains(pdb_file_path, source_chain_id='A', subchain_lengths=_lengths, new_chain_ids=_new_chain_ids, output_path=_deconcat_tmp)
+                    _reconcat_spec = (_new_chain_ids, 'A')
+                    pdb_for_fixer = _deconcat_tmp
+        except Exception:
+            pdb_for_fixer = pdb_file_path
+
+        fixer = PDBFixer(filename=pdb_for_fixer)
         fixer.findMissingResidues()
         fixer.findNonstandardResidues()
         fixer.replaceNonstandardResidues() # This should handle common MODRES
@@ -1191,6 +1217,14 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         with open(output_pdb_path, 'w') as outfile:
             app.PDBFile.writeFile(simulation.topology, positions, outfile, keepIds=True)
 
+        # If we de-concatenated earlier, re-merge the chains back into a single chain A
+        try:
+            if _reconcat_spec and isinstance(_reconcat_spec, tuple):
+                _src_ids, _dest_id = _reconcat_spec
+                merge_chains_into_single(output_pdb_path, _src_ids, dest_chain_id='A', output_path=output_pdb_path)
+        except Exception:
+            pass
+
         # 4a. Align relaxed structure to original pdb_file_path using all CA atoms
         t_align_start = time.time()
         try:
@@ -1297,6 +1331,13 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         except Exception:
             pass
         gc.collect()
+
+        # Cleanup temp file created during de-concatenation
+        try:
+            if _deconcat_tmp and os.path.isfile(_deconcat_tmp):
+                os.remove(_deconcat_tmp)
+        except Exception:
+            pass
 
         elapsed_total = time.time() - start_time
         if _perf is not None:

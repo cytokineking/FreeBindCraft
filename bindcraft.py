@@ -439,6 +439,13 @@ settings_file = os.path.basename(settings_path).split('.')[0]
 filters_file = os.path.basename(filters_path).split('.')[0]
 advanced_file = os.path.basename(advanced_path).split('.')[0]
 
+# Provide context to OpenMM relax for de-concatenation/re-concatenation
+try:
+    os.environ['BINDCRAFT_STARTING_PDB'] = os.path.abspath(os.path.expanduser(target_settings["starting_pdb"]))
+    os.environ['BINDCRAFT_TARGET_CHAINS'] = str(target_settings.get("chains", "A"))
+except Exception:
+    pass
+
 ### load AF2 model settings
 design_models, prediction_models, multimer_validation = load_af2_models(advanced_settings["use_multimer_design"])
 
