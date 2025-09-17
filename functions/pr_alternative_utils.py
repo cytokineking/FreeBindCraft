@@ -1273,11 +1273,18 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         except Exception as e:
             vprint(f"[OpenMM-Relax] Re-concatenation failed: {e}")
 
-        # 4a. Align relaxed structure to original pdb_file_path using all CA atoms
+        # 4a. Align relaxed structure to original using all CA atoms
+        # If we de-concatenated, align to the de-concatenated original to preserve chain separation
         t_align_start = time.time()
         try:
-            biopython_align_all_ca(pdb_file_path, output_pdb_path)
-        except Exception as _:
+            if _deconcat_tmp and os.path.isfile(_deconcat_tmp):
+                vprint("[OpenMM-Relax] Aligning to de-concatenated original to preserve chain separation")
+                biopython_align_all_ca(_deconcat_tmp, output_pdb_path)
+            else:
+                vprint("[OpenMM-Relax] Aligning to original concatenated structure")
+                biopython_align_all_ca(pdb_file_path, output_pdb_path)
+        except Exception as e:
+            vprint(f"[OpenMM-Relax] Alignment failed: {e}")
             pass # Keep silent on alignment failure
 
         # 4b. Apply original B-factors to the (now aligned) relaxed structure
@@ -1409,6 +1416,15 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                 _perf["post_faspr_min_seconds"] = post_min_seconds
             perf_report.update(_perf)
         vprint(f"[OpenMM-Relax] Completed relax for {basename} in {elapsed_total:.2f}s (platform={platform_name_used})")
+        
+        # Cleanup temporary de-concatenated file
+        if _deconcat_tmp and os.path.isfile(_deconcat_tmp):
+            try:
+                os.remove(_deconcat_tmp)
+                vprint(f"[OpenMM-Relax] Cleaned up temporary de-concatenated file: {_deconcat_tmp}")
+            except Exception:
+                pass
+                
         return platform_name_used
 
     except Exception as _:
@@ -1423,6 +1439,13 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                 perf_report.update(_perf)
             except Exception:
                 pass
+        # Cleanup temporary de-concatenated file in error case
+        if _deconcat_tmp and os.path.isfile(_deconcat_tmp):
+            try:
+                os.remove(_deconcat_tmp)
+            except Exception:
+                pass
+                
         # Guard against 'platform_name_used' not being assigned yet
         try:
             return platform_name_used
