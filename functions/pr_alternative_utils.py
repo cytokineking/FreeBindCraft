@@ -855,6 +855,17 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
     start_time = time.time()
     basename = os.path.basename(pdb_file_path)
     vprint(f"[OpenMM-Relax] Initiating relax for {basename}")
+    # Debug file paths (next to final output)
+    try:
+        _dbg_dir = os.path.dirname(output_pdb_path)
+        _dbg_base = os.path.splitext(os.path.basename(output_pdb_path))[0]
+        _dbg_deconcat = os.path.join(_dbg_dir, f"{_dbg_base}.debug_deconcat.pdb")
+        _dbg_pdbfixer = os.path.join(_dbg_dir, f"{_dbg_base}.debug_pdbfixer.pdb")
+        _dbg_relaxed_premerge = os.path.join(_dbg_dir, f"{_dbg_base}.debug_relaxed_premerge.pdb")
+    except Exception:
+        _dbg_deconcat = None
+        _dbg_pdbfixer = None
+        _dbg_relaxed_premerge = None
     _perf = {"stages": []} if isinstance(perf_report, dict) else None
     best_energy = float('inf') * unit.kilojoule_per_mole # Initialize with units
     best_positions = None
@@ -903,20 +914,36 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         try:
             _starting_pdb_env = os.environ.get('BINDCRAFT_STARTING_PDB')
             _starting_chains_env = os.environ.get('BINDCRAFT_TARGET_CHAINS')
+            vprint(f"[OpenMM-Relax] Checking for de-concatenation: starting_pdb={_starting_pdb_env}, chains={_starting_chains_env}")
             if _starting_pdb_env and os.path.isfile(_starting_pdb_env) and _starting_chains_env:
                 _chain_ids_list = [c.strip() for c in _starting_chains_env.split(',') if c.strip()]
                 _lengths = compute_target_chain_lengths(_starting_pdb_env, _starting_chains_env)
+                vprint(f"[OpenMM-Relax] Original chains: {_chain_ids_list}, lengths: {_lengths}")
                 if _chain_ids_list and _lengths and sum(1 for l in _lengths if l > 0) >= 2:
                     import string, tempfile
                     _letters = [c for c in string.ascii_uppercase if c not in ('A','B')]
                     _new_chain_ids = _letters[:len(_chain_ids_list)]
+                    vprint(f"[OpenMM-Relax] De-concatenating chain A into: {_new_chain_ids}")
                     _tmpf = tempfile.NamedTemporaryFile(suffix='.pdb', delete=False)
                     _tmpf.close()
                     _deconcat_tmp = _tmpf.name
                     split_chain_into_subchains(pdb_file_path, source_chain_id='A', subchain_lengths=_lengths, new_chain_ids=_new_chain_ids, output_path=_deconcat_tmp)
+                    vprint(f"[OpenMM-Relax] De-concatenated PDB written to: {_deconcat_tmp}")
+                    # Debug: save de-concatenated PDB next to final output
+                    try:
+                        if _dbg_deconcat:
+                            shutil.copy(_deconcat_tmp, _dbg_deconcat)
+                            vprint(f"[OpenMM-Relax] Debug de-concat saved: {_dbg_deconcat}")
+                    except Exception:
+                        pass
                     _reconcat_spec = (_new_chain_ids, 'A')
                     pdb_for_fixer = _deconcat_tmp
-        except Exception:
+                else:
+                    vprint("[OpenMM-Relax] Single chain or no valid lengths - skipping de-concatenation")
+            else:
+                vprint("[OpenMM-Relax] No de-concatenation context available")
+        except Exception as e:
+            vprint(f"[OpenMM-Relax] De-concatenation failed: {e}")
             pdb_for_fixer = pdb_file_path
 
         fixer = PDBFixer(filename=pdb_for_fixer)
@@ -927,6 +954,15 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         fixer.findMissingAtoms()
         fixer.addMissingAtoms()
         fixer.addMissingHydrogens(7.0) # Add hydrogens at neutral pH
+        vprint(f"[OpenMM-Relax] PDBFixer processing completed on: {pdb_for_fixer}")
+        # Debug: write PDBFixer output
+        try:
+            if _dbg_pdbfixer:
+                with open(_dbg_pdbfixer, 'w') as _df:
+                    app.PDBFile.writeFile(fixer.topology, fixer.positions, _df, keepIds=True)
+                vprint(f"[OpenMM-Relax] Debug PDBFixer output saved: {_dbg_pdbfixer}")
+        except Exception:
+            pass
         if _perf is not None:
             _perf["prep_seconds"] = time.time() - t_prep_start
 
@@ -1216,14 +1252,26 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         positions = simulation.context.getState(getPositions=True).getPositions()
         with open(output_pdb_path, 'w') as outfile:
             app.PDBFile.writeFile(simulation.topology, positions, outfile, keepIds=True)
+        vprint(f"[OpenMM-Relax] OpenMM relaxation completed, saved to: {output_pdb_path}")
+        # Debug: relaxed pre-merge
+        try:
+            if _dbg_relaxed_premerge:
+                shutil.copy(output_pdb_path, _dbg_relaxed_premerge)
+                vprint(f"[OpenMM-Relax] Debug relaxed pre-merge saved: {_dbg_relaxed_premerge}")
+        except Exception:
+            pass
 
         # If we de-concatenated earlier, re-merge the chains back into a single chain A
         try:
             if _reconcat_spec and isinstance(_reconcat_spec, tuple):
                 _src_ids, _dest_id = _reconcat_spec
+                vprint(f"[OpenMM-Relax] Re-concatenating chains {_src_ids} back into chain A")
                 merge_chains_into_single(output_pdb_path, _src_ids, dest_chain_id='A', output_path=output_pdb_path)
-        except Exception:
-            pass
+                vprint(f"[OpenMM-Relax] Re-concatenation completed")
+            else:
+                vprint("[OpenMM-Relax] No re-concatenation needed")
+        except Exception as e:
+            vprint(f"[OpenMM-Relax] Re-concatenation failed: {e}")
 
         # 4a. Align relaxed structure to original pdb_file_path using all CA atoms
         t_align_start = time.time()
