@@ -1261,54 +1261,7 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         except Exception:
             pass
 
-        # If we de-concatenated earlier, re-merge the chains back into a single chain A
-        try:
-            if _reconcat_spec and isinstance(_reconcat_spec, tuple):
-                _src_ids, _dest_id = _reconcat_spec
-                vprint(f"[OpenMM-Relax] Re-concatenating chains {_src_ids} back into chain A")
-                merge_chains_into_single(output_pdb_path, _src_ids, dest_chain_id='A', output_path=output_pdb_path)
-                vprint(f"[OpenMM-Relax] Re-concatenation completed")
-            else:
-                vprint("[OpenMM-Relax] No re-concatenation needed")
-        except Exception as e:
-            vprint(f"[OpenMM-Relax] Re-concatenation failed: {e}")
-
-        # 4a. Align relaxed structure to original using all CA atoms
-        # If we de-concatenated, align to the de-concatenated original to preserve chain separation
-        t_align_start = time.time()
-        try:
-            if _deconcat_tmp and os.path.isfile(_deconcat_tmp):
-                vprint("[OpenMM-Relax] Aligning to de-concatenated original to preserve chain separation")
-                biopython_align_all_ca(_deconcat_tmp, output_pdb_path)
-            else:
-                vprint("[OpenMM-Relax] Aligning to original concatenated structure")
-                biopython_align_all_ca(pdb_file_path, output_pdb_path)
-        except Exception as e:
-            vprint(f"[OpenMM-Relax] Alignment failed: {e}")
-            pass # Keep silent on alignment failure
-
-        # 4b. Apply original B-factors to the (now aligned) relaxed structure
-        t_bfac_start = time.time()
-        if original_residue_b_factors:
-            try:
-                # Use Bio.PDB parser and PDBIO for this
-                relaxed_structure_for_bfactors = bio_parser.get_structure('relaxed_aligned', output_pdb_path)
-                modified_b_factors = False
-                for model in relaxed_structure_for_bfactors:
-                    for chain in model:
-                        for residue in chain:
-                            b_factor_to_apply = original_residue_b_factors.get((chain.id, residue.id))
-                            if b_factor_to_apply is not None:
-                                for atom in residue:
-                                    atom.set_bfactor(b_factor_to_apply)
-                                modified_b_factors = True
-                
-                if modified_b_factors:
-                    io = PDBIO()
-                    io.set_structure(relaxed_structure_for_bfactors)
-                    io.save(output_pdb_path)
-            except Exception as _:
-                pass # Keep silent on B-factor application failure
+        # Defer alignment/B-factor transfer and any re-concatenation until after FASPR
 
         # 5. Optional FASPR repacking and standardized cleanup
         faspr_seconds = None
@@ -1372,6 +1325,51 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                     pass
             except Exception as e_f:
                 print(f"[FASPR] WARN: repack step failed: {e_f}")
+
+        # Final alignment and B-factor application (after FASPR)
+        t_align_start = time.time()
+        try:
+            if _deconcat_tmp and os.path.isfile(_deconcat_tmp):
+                vprint("[OpenMM-Relax] Aligning to de-concatenated original to preserve chain separation")
+                biopython_align_all_ca(_deconcat_tmp, output_pdb_path)
+            else:
+                vprint("[OpenMM-Relax] Aligning to original concatenated structure")
+                biopython_align_all_ca(pdb_file_path, output_pdb_path)
+        except Exception as e:
+            vprint(f"[OpenMM-Relax] Alignment failed: {e}")
+            pass
+
+        t_bfac_start = time.time()
+        if original_residue_b_factors:
+            try:
+                relaxed_structure_for_bfactors = bio_parser.get_structure('relaxed_aligned', output_pdb_path)
+                modified_b_factors = False
+                for model in relaxed_structure_for_bfactors:
+                    for chain in model:
+                        for residue in chain:
+                            b_factor_to_apply = original_residue_b_factors.get((chain.id, residue.id))
+                            if b_factor_to_apply is not None:
+                                for atom in residue:
+                                    atom.set_bfactor(b_factor_to_apply)
+                                modified_b_factors = True
+                if modified_b_factors:
+                    io = PDBIO()
+                    io.set_structure(relaxed_structure_for_bfactors)
+                    io.save(output_pdb_path)
+            except Exception:
+                pass
+
+        # Re-concatenate chains at the very end (after alignment/B-factors)
+        try:
+            if _reconcat_spec and isinstance(_reconcat_spec, tuple):
+                _src_ids, _dest_id = _reconcat_spec
+                vprint(f"[OpenMM-Relax] Re-concatenating chains {_src_ids} back into chain A (final step)")
+                merge_chains_into_single(output_pdb_path, _src_ids, dest_chain_id='A', output_path=output_pdb_path)
+                vprint(f"[OpenMM-Relax] Re-concatenation completed")
+            else:
+                vprint("[OpenMM-Relax] No re-concatenation needed")
+        except Exception as e:
+            vprint(f"[OpenMM-Relax] Re-concatenation failed: {e}")
 
         # 6. Clean the output PDB
         clean_pdb(output_pdb_path)
