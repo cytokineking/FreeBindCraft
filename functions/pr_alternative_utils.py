@@ -45,6 +45,7 @@ from itertools import zip_longest
 from .generic_utils import clean_pdb
 from .logging_utils import vprint
 from .biopython_utils import hotspot_residues, biopython_align_all_ca
+from .biopython_utils import compute_target_segment_lengths
 from .biopython_utils import compute_target_chain_lengths, split_chain_into_subchains, merge_chains_into_single
 
 # OpenMM imports
@@ -917,13 +918,23 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
             vprint(f"[OpenMM-Relax] Checking for de-concatenation: starting_pdb={_starting_pdb_env}, chains={_starting_chains_env}")
             if _starting_pdb_env and os.path.isfile(_starting_pdb_env) and _starting_chains_env:
                 _chain_ids_list = [c.strip() for c in _starting_chains_env.split(',') if c.strip()]
-                _lengths = compute_target_chain_lengths(_starting_pdb_env, _starting_chains_env)
-                vprint(f"[OpenMM-Relax] Original chains: {_chain_ids_list}, lengths: {_lengths}")
+                # Prefer segment-aware lengths to prevent cross-gap bonding
+                _lengths = compute_target_segment_lengths(_starting_pdb_env, _starting_chains_env)
+                vprint(f"[OpenMM-Relax] Segment-aware lengths: {_lengths}")
                 if _chain_ids_list and _lengths and sum(1 for l in _lengths if l > 0) >= 2:
                     import string, tempfile
                     _letters = [c for c in string.ascii_uppercase if c not in ('A','B')]
                     _new_chain_ids = _letters[:len(_chain_ids_list)]
-                    vprint(f"[OpenMM-Relax] De-concatenating chain A into: {_new_chain_ids}")
+                    # If segments exceed alphabet, extend with digits then lowercase
+                    if len(_new_chain_ids) < len(_lengths):
+                        extra = []
+                        for ch in '0123456789abcdefghijklmnopqrstuvwxyz':
+                            if ch not in ('A','B'):
+                                extra.append(ch)
+                            if len(_letters) + len(extra) >= len(_lengths):
+                                break
+                        _new_chain_ids = _letters + extra[:max(0, len(_lengths) - len(_letters))]
+                    vprint(f"[OpenMM-Relax] De-concatenating chain A into {len(_lengths)} segments: {_new_chain_ids[:min(6,len(_new_chain_ids))]}{'...' if len(_new_chain_ids)>6 else ''}")
                     _tmpf = tempfile.NamedTemporaryFile(suffix='.pdb', delete=False)
                     _tmpf.close()
                     _deconcat_tmp = _tmpf.name
@@ -1370,6 +1381,47 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                 vprint("[OpenMM-Relax] No re-concatenation needed")
         except Exception as e:
             vprint(f"[OpenMM-Relax] Re-concatenation failed: {e}")
+
+        # Append connectivity records from a PDBFixer pass to restore SSBOND/CONECT
+        try:
+            _tmp_conn = None
+            import tempfile as _tf
+            _tmpf2 = _tf.NamedTemporaryFile(suffix='.pdb', delete=False)
+            _tmpf2.close()
+            _tmp_conn = _tmpf2.name
+            # Run PDBFixer quickly to regenerate connectivity
+            _fx = PDBFixer(filename=output_pdb_path)
+            with open(_tmp_conn, 'w') as _fd:
+                app.PDBFile.writeFile(_fx.topology, _fx.positions, _fd, keepIds=True)
+            # Extract connectivity lines
+            conn_lines = []
+            with open(_tmp_conn, 'r') as _fd:
+                for _ln in _fd:
+                    if _ln.startswith(('SSBOND', 'CONECT', 'LINK')):
+                        conn_lines.append(_ln)
+            # Append unique connectivity lines to final output (before END if present)
+            if conn_lines:
+                with open(output_pdb_path, 'r') as _fin:
+                    lines = _fin.readlines()
+                end_idx = next((i for i,l in enumerate(lines) if l.startswith('END')), None)
+                # Deduplicate: avoid duplicating existing connectivity
+                existing = set(l for l in lines if l.startswith(('SSBOND','CONECT','LINK')))
+                to_add = [l for l in conn_lines if l not in existing]
+                if to_add:
+                    if end_idx is not None:
+                        lines = lines[:end_idx] + to_add + lines[end_idx:]
+                    else:
+                        lines.extend(to_add)
+                    with open(output_pdb_path, 'w') as _fout:
+                        _fout.writelines(lines)
+                vprint(f"[OpenMM-Relax] Appended {len(to_add)} connectivity records from PDBFixer")
+            try:
+                if _tmp_conn and os.path.isfile(_tmp_conn):
+                    os.remove(_tmp_conn)
+            except Exception:
+                pass
+        except Exception as e:
+            vprint(f"[OpenMM-Relax] WARN: failed to append connectivity records: {e}")
 
         # 6. Clean the output PDB
         clean_pdb(output_pdb_path)

@@ -543,6 +543,65 @@ def compute_target_chain_lengths(starting_pdb_path: str, chains: str):
         return []
 
 
+def compute_target_segment_lengths(starting_pdb_path: str, chains: str):
+    """
+    Compute continuous segment lengths for each requested chain by splitting on
+    residue number gaps (resseq jumps > 1). Returns a flattened list of segment
+    lengths in the order of chains provided, with segments ordered as they
+    appear along each chain.
+
+    Parameters
+    ----------
+    starting_pdb_path : str
+        Path to the original input PDB that contains true target chains
+    chains : str
+        Comma-separated chain IDs string, e.g., "A,B" or "A,B,C".
+
+    Returns
+    -------
+    list[int]
+        Flattened list of segment lengths across all requested chains.
+    """
+    try:
+        chain_ids = [c.strip() for c in str(chains).split(',') if c and str(c).strip()]
+        if not chain_ids:
+            return []
+
+        parser = PDBParser(QUIET=True)
+        structure = parser.get_structure('start', starting_pdb_path)
+        model = structure[0]
+
+        all_segment_lengths = []
+        for cid in chain_ids:
+            if cid not in model:
+                continue
+            chain = model[cid]
+            seg_len = 0
+            last_resseq = None
+            for residue in chain:
+                if not is_aa(residue, standard=True):
+                    continue
+                # residue.id is (hetfield, resseq, icode)
+                resseq = residue.id[1]
+                if last_resseq is None:
+                    seg_len = 1
+                else:
+                    # Start a new segment if there is a numbering gap
+                    if isinstance(resseq, int) and isinstance(last_resseq, int) and (resseq - last_resseq) > 1:
+                        if seg_len > 0:
+                            all_segment_lengths.append(int(seg_len))
+                        seg_len = 1
+                    else:
+                        seg_len += 1
+                last_resseq = resseq
+            if seg_len > 0:
+                all_segment_lengths.append(int(seg_len))
+
+        return all_segment_lengths
+    except Exception:
+        return []
+
+
 def split_chain_into_subchains(pdb_in_path: str,
                                source_chain_id: str,
                                subchain_lengths,
