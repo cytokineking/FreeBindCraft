@@ -8,6 +8,8 @@ replication is not possible.
 
 Functions:
     openmm_relax: Structure relaxation using OpenMM with optional FASPR side-chain repacking
+                 Includes de-concatenation/re-concatenation logic to prevent unintended
+                 peptide bond formation between biologically distinct chains/segments
     openmm_relax_subprocess: Run relax in a fresh process to isolate OpenCL context
     pr_alternative_score_interface: Interface scoring using Biopython and FreeSASA
     _calculate_shape_complementarity: Shape complementarity calculation using sc-rs or fallback
@@ -24,6 +26,28 @@ Helper Functions:
     _chain_total_sasa: Calculate total SASA for a chain
     _suppress_freesasa_warnings: Suppress FreeSASA warnings
     hotspot_residues: Interface residue identification
+
+Chain Manipulation Functions (from biopython_utils):
+    compute_target_segment_lengths: Analyze original PDB to determine segment boundaries
+                                   within each biological chain based on residue gaps
+    split_chain_into_subchains: Split a concatenated chain into separate chains based
+                               on provided segment lengths and new chain IDs
+    merge_chains_into_single: Merge multiple chains back into a single chain for
+                             downstream compatibility with BindCraft scoring
+
+Chain Handling:
+    ColabDesign concatenates target chains into a single chain 'A', which can cause OpenMM
+    to inappropriately infer peptide bonds between biologically distinct chains or across gaps
+    in discontinuous segments. To prevent this, we implement:
+    
+    1. De-concatenation: Split chain 'A' into separate chains (C, D, E, etc.) based on the
+       original biological chains and any discontinuous segments within each chain
+    2. Structure Processing: Run PDBFixer, OpenMM relaxation, and FASPR on the de-concatenated
+       structure to maintain proper chain separation
+    3. Re-concatenation: Merge the processed chains back into chain 'A' for downstream scoring
+    
+    This approach ensures that OpenMM treats each biological unit as a separate entity while
+    maintaining compatibility with the existing BindCraft scoring pipeline.
 
 Rationale:
     In long runs we observed sporadic OpenCL context failures after many relax calls,
@@ -45,6 +69,8 @@ from itertools import zip_longest
 from .generic_utils import clean_pdb
 from .logging_utils import vprint
 from .biopython_utils import hotspot_residues, biopython_align_all_ca
+from .biopython_utils import compute_target_segment_lengths
+from .biopython_utils import compute_target_chain_lengths, split_chain_into_subchains, merge_chains_into_single
 
 # OpenMM imports
 import openmm
@@ -835,15 +861,42 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                  ):
     """
     Relaxes a PDB structure using OpenMM with L-BFGS minimizer.
-    Uses PDBFixer to prepare the structure first.
-    Applies backbone heavy-atom harmonic restraints (ramped down using restraint_ramp_factors)
-    and uses OBC2 implicit solvent.
-    Includes an additional ramped LJ-like repulsive force (using lj_rep_ramp_factors) to help with initial clashes.
-    Includes short MD shakes for the first two ramp stages only (speed optimization).
-    Optionally integrates FASPR (Fast, Accurate, and Deterministic Protein Side-chain Packing) for side-chain repacking after relaxation,
-    followed by hydrogen addition and a short minimization to standardize the final structure.
-    Uses accept-to-best position bookkeeping across all stages.
-    Aligns to original and copies B-factors.
+    
+    Chain Handling:
+    ---------------
+    To prevent OpenMM/PDBFixer from inappropriately connecting biologically distinct chains
+    or segments, this function implements a de-concatenation/re-concatenation strategy:
+    
+    1. De-concatenation: If BINDCRAFT_STARTING_PDB and BINDCRAFT_TARGET_CHAINS environment
+       variables are set, splits the concatenated chain 'A' into separate chains based on:
+       - Original biological chain boundaries from the starting PDB
+       - Discontinuous segments within each biological chain (residue number gaps)
+       
+    2. Structure Processing: Runs PDBFixer, OpenMM relaxation, and optional FASPR on the
+       de-concatenated structure, maintaining proper chain separation throughout
+       
+    3. Re-concatenation: Merges all processed chains back into chain 'A' for compatibility
+       with downstream BindCraft scoring
+    
+    Processing Steps:
+    ----------------
+    - Uses PDBFixer to prepare the structure (add missing atoms, hydrogens, etc.)
+    - Applies backbone heavy-atom harmonic restraints (ramped down using restraint_ramp_factors)
+    - Uses OBC2 implicit solvent with additional ramped LJ-like repulsive force for clash resolution
+    - Includes short MD shakes for the first two ramp stages only (speed optimization)
+    - Optionally integrates FASPR for side-chain repacking after relaxation
+    - Follows with hydrogen addition and short minimization to standardize final structure
+    - Uses accept-to-best position bookkeeping across all stages
+    - Aligns final structure to input and copies B-factors
+    - Preserves disulfide bonds and other connectivity records in final output
+    
+    Debug Output:
+    ------------
+    When BINDCRAFT_DEBUG_PDBS=1, saves intermediate structures:
+    - .debug_deconcat.pdb: After de-concatenation (if applicable)
+    - .debug_pdbfixer.pdb: After PDBFixer preparation
+    - .debug_post_initial_relax.pdb: After OpenMM relaxation
+    - .debug_post_faspr.pdb: After FASPR repacking (if enabled)
     
     Returns
     -------
@@ -854,6 +907,18 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
     start_time = time.time()
     basename = os.path.basename(pdb_file_path)
     vprint(f"[OpenMM-Relax] Initiating relax for {basename}")
+    # Debug file paths (next to final output)
+    try:
+        _dbg_dir = os.path.dirname(output_pdb_path)
+        _dbg_base = os.path.splitext(os.path.basename(output_pdb_path))[0]
+        _dbg_deconcat = os.path.join(_dbg_dir, f"{_dbg_base}.debug_deconcat.pdb")
+        _dbg_pdbfixer = os.path.join(_dbg_dir, f"{_dbg_base}.debug_pdbfixer.pdb")
+        _dbg_post_initial_relax = os.path.join(_dbg_dir, f"{_dbg_base}.debug_post_initial_relax.pdb")
+        _dbg_post_faspr = os.path.join(_dbg_dir, f"{_dbg_base}.debug_post_faspr.pdb")
+    except Exception:
+        _dbg_deconcat = None
+        _dbg_pdbfixer = None
+        _dbg_relaxed_premerge = None
     _perf = {"stages": []} if isinstance(perf_report, dict) else None
     best_energy = float('inf') * unit.kilojoule_per_mole # Initialize with units
     best_positions = None
@@ -893,7 +958,69 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
     try:
         # 1. Prepare the PDB structure using PDBFixer
         t_prep_start = time.time()
-        fixer = PDBFixer(filename=pdb_file_path)
+        # If the input likely has ColabDesign-concatenated target in chain A,
+        # de-concatenate into explicit chains before running PDBFixer so OpenMM
+        # cannot form peptide bonds across biological chain boundaries.
+        pdb_for_fixer = pdb_file_path
+        _deconcat_tmp = None
+        _reconcat_spec = None
+        try:
+            _starting_pdb_env = os.environ.get('BINDCRAFT_STARTING_PDB')
+            _starting_chains_env = os.environ.get('BINDCRAFT_TARGET_CHAINS')
+            vprint(f"[OpenMM-Relax] Checking for de-concatenation: starting_pdb={_starting_pdb_env}, chains={_starting_chains_env}")
+            if _starting_pdb_env and os.path.isfile(_starting_pdb_env) and _starting_chains_env:
+                _chain_ids_list = [c.strip() for c in _starting_chains_env.split(',') if c.strip()]
+                # Prefer segment-aware lengths to prevent cross-gap bonding
+                _lengths = compute_target_segment_lengths(_starting_pdb_env, _starting_chains_env)
+                vprint(f"[OpenMM-Relax] Segment-aware lengths: {_lengths}")
+                if _chain_ids_list and _lengths and sum(1 for l in _lengths if l > 0) >= 2:
+                    import string, tempfile
+                    # Build exactly N chain IDs (exclude A/B), prioritizing uppercase then digits then lowercase
+                    N = len(_lengths)
+                    pool = [c for c in string.ascii_uppercase if c not in ('A','B')]
+                    pool += list('0123456789')
+                    pool += list('abcdefghijklmnopqrstuvwxyz')
+                    if len(pool) < N:
+                        raise RuntimeError(f"Insufficient chain IDs for {N} segments")
+                    _new_chain_ids = pool[:N]
+                    vprint(f"[OpenMM-Relax] De-concatenating chain A into {N} segments: {_new_chain_ids[:min(6,N)]}{'...' if N>6 else ''}")
+                    _tmpf = tempfile.NamedTemporaryFile(suffix='.pdb', delete=False)
+                    _tmpf.close()
+                    _deconcat_tmp = _tmpf.name
+                    split_chain_into_subchains(pdb_file_path, source_chain_id='A', subchain_lengths=_lengths, new_chain_ids=_new_chain_ids, output_path=_deconcat_tmp)
+                    vprint(f"[OpenMM-Relax] De-concatenated PDB written to: {_deconcat_tmp}")
+                    # Sanity check non-empty temp file; if empty, skip de-concatenation
+                    try:
+                        if (not os.path.isfile(_deconcat_tmp)) or os.path.getsize(_deconcat_tmp) == 0:
+                            vprint(f"[OpenMM-Relax] De-concatenation produced empty file; skipping and using original input")
+                            _deconcat_tmp = None
+                            _reconcat_spec = None
+                            pdb_for_fixer = pdb_file_path
+                        else:
+                            pdb_for_fixer = _deconcat_tmp
+                    except Exception:
+                        _deconcat_tmp = None
+                        _reconcat_spec = None
+                        pdb_for_fixer = pdb_file_path
+                    # Debug: save de-concatenated PDB next to final output
+                    try:
+                        if _dbg_deconcat and os.environ.get('BINDCRAFT_DEBUG_PDBS') == '1':
+                            if _deconcat_tmp and os.path.isfile(_deconcat_tmp) and os.path.getsize(_deconcat_tmp) > 0:
+                                shutil.copy(_deconcat_tmp, _dbg_deconcat)
+                                vprint(f"[OpenMM-Relax] Debug de-concat saved: {_dbg_deconcat}")
+                    except Exception:
+                        pass
+                    if _deconcat_tmp:
+                        _reconcat_spec = (_new_chain_ids, 'A')
+                else:
+                    vprint("[OpenMM-Relax] Single chain or no valid lengths - skipping de-concatenation")
+            else:
+                vprint("[OpenMM-Relax] No de-concatenation context available")
+        except Exception as e:
+            vprint(f"[OpenMM-Relax] De-concatenation failed: {e}")
+            pdb_for_fixer = pdb_file_path
+
+        fixer = PDBFixer(filename=pdb_for_fixer)
         fixer.findMissingResidues()
         fixer.findNonstandardResidues()
         fixer.replaceNonstandardResidues() # This should handle common MODRES
@@ -901,6 +1028,15 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         fixer.findMissingAtoms()
         fixer.addMissingAtoms()
         fixer.addMissingHydrogens(7.0) # Add hydrogens at neutral pH
+        vprint(f"[OpenMM-Relax] PDBFixer processing completed on: {pdb_for_fixer}")
+        # Debug: write PDBFixer output
+        try:
+            if _dbg_pdbfixer and os.environ.get('BINDCRAFT_DEBUG_PDBS') == '1':
+                with open(_dbg_pdbfixer, 'w') as _df:
+                    app.PDBFile.writeFile(fixer.topology, fixer.positions, _df, keepIds=True)
+                vprint(f"[OpenMM-Relax] Debug PDBFixer output saved: {_dbg_pdbfixer}")
+        except Exception:
+            pass
         if _perf is not None:
             _perf["prep_seconds"] = time.time() - t_prep_start
 
@@ -1190,36 +1326,16 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         positions = simulation.context.getState(getPositions=True).getPositions()
         with open(output_pdb_path, 'w') as outfile:
             app.PDBFile.writeFile(simulation.topology, positions, outfile, keepIds=True)
-
-        # 4a. Align relaxed structure to original pdb_file_path using all CA atoms
-        t_align_start = time.time()
+        vprint(f"[OpenMM-Relax] OpenMM relaxation completed, saved to: {output_pdb_path}")
+        # Debug: relaxed pre-merge
         try:
-            biopython_align_all_ca(pdb_file_path, output_pdb_path)
-        except Exception as _:
-            pass # Keep silent on alignment failure
+            if _dbg_post_initial_relax and os.environ.get('BINDCRAFT_DEBUG_PDBS') == '1':
+                shutil.copy(output_pdb_path, _dbg_post_initial_relax)
+                vprint(f"[OpenMM-Relax] Debug post-initial-relax saved: {_dbg_post_initial_relax}")
+        except Exception:
+            pass
 
-        # 4b. Apply original B-factors to the (now aligned) relaxed structure
-        t_bfac_start = time.time()
-        if original_residue_b_factors:
-            try:
-                # Use Bio.PDB parser and PDBIO for this
-                relaxed_structure_for_bfactors = bio_parser.get_structure('relaxed_aligned', output_pdb_path)
-                modified_b_factors = False
-                for model in relaxed_structure_for_bfactors:
-                    for chain in model:
-                        for residue in chain:
-                            b_factor_to_apply = original_residue_b_factors.get((chain.id, residue.id))
-                            if b_factor_to_apply is not None:
-                                for atom in residue:
-                                    atom.set_bfactor(b_factor_to_apply)
-                                modified_b_factors = True
-                
-                if modified_b_factors:
-                    io = PDBIO()
-                    io.set_structure(relaxed_structure_for_bfactors)
-                    io.save(output_pdb_path)
-            except Exception as _:
-                pass # Keep silent on B-factor application failure
+        # Defer alignment/B-factor transfer and any re-concatenation until after FASPR
 
         # 5. Optional FASPR repacking and standardized cleanup
         faspr_seconds = None
@@ -1276,6 +1392,13 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                                 app.PDBFile.writeFile(fixer2.topology, fixer2.positions, f2, keepIds=True)
                         except Exception:
                             shutil.copy(tmp_faspr_out, output_pdb_path)
+                # Debug: save after FASPR
+                try:
+                    if _dbg_post_faspr and os.environ.get('BINDCRAFT_DEBUG_PDBS') == '1':
+                        shutil.copy(output_pdb_path, _dbg_post_faspr)
+                        vprint(f"[OpenMM-Relax] Debug post-FASPR saved: {_dbg_post_faspr}")
+                except Exception:
+                    pass
                 # Cleanup temp
                 try:
                     shutil.rmtree(tmp_dir)
@@ -1283,6 +1406,92 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                     pass
             except Exception as e_f:
                 print(f"[FASPR] WARN: repack step failed: {e_f}")
+
+        # Final alignment and B-factor application (after FASPR)
+        t_align_start = time.time()
+        try:
+            if _deconcat_tmp and os.path.isfile(_deconcat_tmp):
+                vprint("[OpenMM-Relax] Aligning to de-concatenated original to preserve chain separation")
+                biopython_align_all_ca(_deconcat_tmp, output_pdb_path)
+            else:
+                vprint("[OpenMM-Relax] Aligning to original concatenated structure")
+                biopython_align_all_ca(pdb_file_path, output_pdb_path)
+        except Exception as e:
+            vprint(f"[OpenMM-Relax] Alignment failed: {e}")
+            pass
+
+        t_bfac_start = time.time()
+        if original_residue_b_factors:
+            try:
+                relaxed_structure_for_bfactors = bio_parser.get_structure('relaxed_aligned', output_pdb_path)
+                modified_b_factors = False
+                for model in relaxed_structure_for_bfactors:
+                    for chain in model:
+                        for residue in chain:
+                            b_factor_to_apply = original_residue_b_factors.get((chain.id, residue.id))
+                            if b_factor_to_apply is not None:
+                                for atom in residue:
+                                    atom.set_bfactor(b_factor_to_apply)
+                                modified_b_factors = True
+                if modified_b_factors:
+                    io = PDBIO()
+                    io.set_structure(relaxed_structure_for_bfactors)
+                    io.save(output_pdb_path)
+            except Exception:
+                pass
+
+        # Re-concatenate chains at the very end (after alignment/B-factors)
+        try:
+            if _reconcat_spec and isinstance(_reconcat_spec, tuple):
+                _src_ids, _dest_id = _reconcat_spec
+                vprint(f"[OpenMM-Relax] Re-concatenating chains {_src_ids} back into chain A (final step)")
+                merge_chains_into_single(output_pdb_path, _src_ids, dest_chain_id='A', output_path=output_pdb_path)
+                vprint(f"[OpenMM-Relax] Re-concatenation completed")
+            else:
+                vprint("[OpenMM-Relax] No re-concatenation needed")
+        except Exception as e:
+            vprint(f"[OpenMM-Relax] Re-concatenation failed: {e}")
+
+        # Append connectivity records from a PDBFixer pass to restore SSBOND/CONECT
+        try:
+            _tmp_conn = None
+            import tempfile as _tf
+            _tmpf2 = _tf.NamedTemporaryFile(suffix='.pdb', delete=False)
+            _tmpf2.close()
+            _tmp_conn = _tmpf2.name
+            # Run PDBFixer quickly to regenerate connectivity
+            _fx = PDBFixer(filename=output_pdb_path)
+            with open(_tmp_conn, 'w') as _fd:
+                app.PDBFile.writeFile(_fx.topology, _fx.positions, _fd, keepIds=True)
+            # Extract connectivity lines
+            conn_lines = []
+            with open(_tmp_conn, 'r') as _fd:
+                for _ln in _fd:
+                    if _ln.startswith(('SSBOND', 'CONECT', 'LINK')):
+                        conn_lines.append(_ln)
+            # Append unique connectivity lines to final output (before END if present)
+            if conn_lines:
+                with open(output_pdb_path, 'r') as _fin:
+                    lines = _fin.readlines()
+                end_idx = next((i for i,l in enumerate(lines) if l.startswith('END')), None)
+                # Deduplicate: avoid duplicating existing connectivity
+                existing = set(l for l in lines if l.startswith(('SSBOND','CONECT','LINK')))
+                to_add = [l for l in conn_lines if l not in existing]
+                if to_add:
+                    if end_idx is not None:
+                        lines = lines[:end_idx] + to_add + lines[end_idx:]
+                    else:
+                        lines.extend(to_add)
+                    with open(output_pdb_path, 'w') as _fout:
+                        _fout.writelines(lines)
+                vprint(f"[OpenMM-Relax] Appended {len(to_add)} connectivity records from PDBFixer")
+            try:
+                if _tmp_conn and os.path.isfile(_tmp_conn):
+                    os.remove(_tmp_conn)
+            except Exception:
+                pass
+        except Exception as e:
+            vprint(f"[OpenMM-Relax] WARN: failed to append connectivity records: {e}")
 
         # 6. Clean the output PDB
         clean_pdb(output_pdb_path)
@@ -1297,6 +1506,13 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         except Exception:
             pass
         gc.collect()
+
+        # Cleanup temp file created during de-concatenation
+        try:
+            if _deconcat_tmp and os.path.isfile(_deconcat_tmp):
+                os.remove(_deconcat_tmp)
+        except Exception:
+            pass
 
         elapsed_total = time.time() - start_time
         if _perf is not None:
@@ -1320,6 +1536,15 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                 _perf["post_faspr_min_seconds"] = post_min_seconds
             perf_report.update(_perf)
         vprint(f"[OpenMM-Relax] Completed relax for {basename} in {elapsed_total:.2f}s (platform={platform_name_used})")
+        
+        # Cleanup temporary de-concatenated file
+        if _deconcat_tmp and os.path.isfile(_deconcat_tmp):
+            try:
+                os.remove(_deconcat_tmp)
+                vprint(f"[OpenMM-Relax] Cleaned up temporary de-concatenated file: {_deconcat_tmp}")
+            except Exception:
+                pass
+                
         return platform_name_used
 
     except Exception as _:
@@ -1334,6 +1559,13 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                 perf_report.update(_perf)
             except Exception:
                 pass
+        # Cleanup temporary de-concatenated file in error case
+        if _deconcat_tmp and os.path.isfile(_deconcat_tmp):
+            try:
+                os.remove(_deconcat_tmp)
+            except Exception:
+                pass
+                
         # Guard against 'platform_name_used' not being assigned yet
         try:
             return platform_name_used
