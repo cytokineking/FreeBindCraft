@@ -269,6 +269,11 @@ def _prompt_interactive_and_prepare_args(args):
         plots_on = _yes_no("Enable saving plots?", default_yes=True)
         animations_on = _yes_no("Enable saving animations?", default_yes=True)
         run_with_pyrosetta = _yes_no("Run with PyRosetta?", default_yes=True)
+        
+        # Only ask about debug PDbs if not using PyRosetta (since debug PDbs are for OpenMM relax)
+        debug_pdbs = False
+        if not run_with_pyrosetta:
+            debug_pdbs = _yes_no("Write intermediate debug PDBs during OpenMM relax?", default_yes=False)
 
         # Container selection BEFORE final confirmation
         container_plan = {k: None for k in container_plan}  # reset plan
@@ -327,6 +332,8 @@ def _prompt_interactive_and_prepare_args(args):
         print(f"Filter Setting: {os.path.splitext(os.path.basename(selected_filter))[0]}")
         print(f"Advanced Setting: {os.path.splitext(os.path.basename(selected_advanced))[0]}")
         print(f"Verbose: {'Yes' if verbose else 'No'}")
+        if not run_with_pyrosetta:
+            print(f"Debug PDbs: {'Yes' if debug_pdbs else 'No'}")
         print(f"Plots: {'On' if plots_on else 'Off'}")
         print(f"Animations: {'On' if animations_on else 'Off'}")
         print(f"PyRosetta: {'On' if run_with_pyrosetta else 'Off'}")
@@ -366,6 +373,7 @@ def _prompt_interactive_and_prepare_args(args):
     args.filters = selected_filter
     args.advanced = selected_advanced
     args.verbose = verbose
+    args.debug_pdbs = debug_pdbs
     args.no_plots = (not plots_on)
     args.no_animations = (not animations_on)
     args.no_pyrosetta = (not run_with_pyrosetta)
@@ -395,6 +403,8 @@ def _prompt_interactive_and_prepare_args(args):
             docker_cmd.append("--no-pyrosetta")
         if args.verbose:
             docker_cmd.append("--verbose")
+        if args.debug_pdbs:
+            docker_cmd.append("--debug-pdbs")
         if args.no_plots:
             docker_cmd.append("--no-plots")
         if args.no_animations:
