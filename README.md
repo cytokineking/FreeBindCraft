@@ -104,7 +104,7 @@ If you run BindCraft without `--settings` in a terminal (TTY) or pass `--interac
 You can further control runtime behavior with these flags:
 
 - `--verbose`: Enable detailed timing/progress logs for BindCraft internals.
-- '--debug-pdbs': Write intermediate PDBs from OpenMM relax (`.debug_deconcat.pdb`, `.debug_pdbfixer.pdb`, `.debug_post_initial_relax.pdb`, `.debug_post_faspr.pdb`)
+- `--debug-pdbs`: Write intermediate PDBs from OpenMM relax (`.debug_deconcat.pdb`, `.debug_pdbfixer.pdb`, `.debug_post_initial_relax.pdb`, `.debug_post_faspr.pdb`)
 - `--no-plots`: Disable saving design trajectory plots (overrides advanced settings).
 - `--no-animations`: Disable saving trajectory animations (overrides advanced settings).
 
@@ -119,7 +119,7 @@ python -u ./bindcraft.py \
 
 ## Containerized usage (Docker)
 
-Run FreeBindCraft in a GPU-enabled Docker container (either build locally or pull a prebuilt image).
+Run FreeBindCraft in a GPU-enabled Docker container (build locally).
 
 ### Prerequisites (on the host)
 
@@ -134,7 +134,7 @@ Run FreeBindCraft in a GPU-enabled Docker container (either build locally or pul
     docker run --rm --gpus all nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 nvidia-smi
     ```
 
-### Option A: Build the image from this repository
+### Build the image from this repository
 
 Build without PyRosetta (default):
 ```bash
@@ -156,23 +156,7 @@ docker run --gpus all --rm -it \
   python extras/test_openmm_relax.py example/PDL1.pdb /work/out/relax_test
 ```
 
-### Option B: Pull the prebuilt image from Docker Hub (Only No-Pyrosetta Version)
-
-- Image: `cytokineking/freebindcraft-no-pyrosetta:latest`
-
-```bash
-docker pull cytokineking/freebindcraft-no-pyrosetta:latest
-```
-
-Sanity test (OpenMM relax):
-```bash
-mkdir -p ~/bindcraft_out
-docker run --gpus all --rm -it \
-  --ulimit nofile=65536:65536 \
-  -v ~/bindcraft_out:/work/out \
-  cytokineking/freebindcraft-no-pyrosetta:latest \
-  python extras/test_openmm_relax.py example/PDL1.pdb /work/out/relax_test
-```
+ 
 
 ### Running BindCraft in Docker (general guidance)
 
@@ -188,7 +172,7 @@ mkdir -p /path/on/host/run_outputs
 docker run --gpus all --rm -it \
   --ulimit nofile=65536:65536 \
   -v /path/on/host/run_outputs:/root/software/pdl1 \
-  cytokineking/freebindcraft-no-pyrosetta:latest \
+  freebindcraft:gpu \
   python bindcraft.py \
     --settings settings_target/PDL1.json \
     --filters settings_filters/default_filters.json \
@@ -204,7 +188,7 @@ docker run --gpus all --rm -it \
   -v /path/on/host/run_outputs:/root/software/pdl1 \
   -v /path/on/host/my_settings.json:/app/settings_target/my_settings.json:ro \
   -v /path/on/host/your_target.pdb:/app/example/your_target.pdb:ro \
-  cytokineking/freebindcraft-no-pyrosetta:latest \
+  freebindcraft:gpu \
   python bindcraft.py \
     --settings /app/settings_target/my_settings.json \
     --filters settings_filters/default_filters.json \
@@ -221,7 +205,7 @@ docker run --gpus all --rm -it \
   -v /path/on/host/my_filters.json:/app/settings_filters/my_filters.json:ro \
   -v /path/on/host/my_advanced.json:/app/settings_advanced/my_advanced.json:ro \
   -v /path/on/host/your_target.pdb:/app/example/your_target.pdb:ro \
-  cytokineking/freebindcraft-no-pyrosetta:latest \
+  freebindcraft:gpu \
   python bindcraft.py \
     --settings /app/settings_target/my_settings.json \
     --filters /app/settings_filters/my_filters.json \
@@ -233,16 +217,16 @@ Notes:
 - Always mount your output directory to the path set as `design_path` in your target settings (e.g., `/root/software/pdl1`).
 - Always increase file descriptor limits with `--ulimit nofile=65536:65536`. The image’s entrypoint also attempts to raise the soft limit inside the container.
 
-### Interactive wrapper for Docker (works with Options A and B)
+### Interactive wrapper for Docker
 
-After you build (Option A) or pull (Option B) an image, you can use the interactive Docker wrapper:
+After you build an image locally, you can use the interactive Docker wrapper:
 
 ```bash
 python docker_cli.py
 ```
 
 This wizard:
-- Lists local Docker images and lets you choose one (defaults to `freebindcraft:latest` if present, or enter another image name such as `cytokineking/freebindcraft-no-pyrosetta:latest`)
+- Lists local Docker images and lets you choose one (defaults to `freebindcraft:gpu` if present, or enter another local image tag such as `freebindcraft:pyrosetta`)
 - Asks for a single GPU index to expose
 - Prompts for all inputs identical to the local interactive CLI (design type, validated PDB path, output directory auto-created, chains, hotspots, peptide/miniprotein-specific filters and advanced profiles, verbose/plots/animations, PyRosetta)
 - Writes a target settings JSON into your chosen output directory

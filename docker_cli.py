@@ -89,9 +89,9 @@ def main() -> None:
             for idx, name in enumerate(images, 1):
                 print(f"{idx}. {name}")
             print("0. Enter image name manually")
-            choice = input_with_default("Choose image (press Enter for freebindcraft:latest):", "")
+            choice = input_with_default("Choose image (press Enter for freebindcraft:gpu):", "")
             if not choice:
-                selected_image = "freebindcraft:latest"
+                selected_image = "freebindcraft:gpu"
             else:
                 try:
                     cidx = int(choice)
@@ -102,7 +102,7 @@ def main() -> None:
                 except Exception:
                     selected_image = None
         if not selected_image:
-            selected_image = input_with_default("Docker image to use (default freebindcraft:latest):", "freebindcraft:latest")
+            selected_image = input_with_default("Docker image to use (default freebindcraft:gpu):", "freebindcraft:gpu")
 
         # GPU index
         gpu_idx = input_with_default("GPU index to expose (default 0):", "0")
