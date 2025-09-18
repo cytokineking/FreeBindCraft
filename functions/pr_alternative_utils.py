@@ -974,7 +974,7 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                 _lengths = compute_target_segment_lengths(_starting_pdb_env, _starting_chains_env)
                 vprint(f"[OpenMM-Relax] Segment-aware lengths: {_lengths}")
                 if _chain_ids_list and _lengths and sum(1 for l in _lengths if l > 0) >= 2:
-                    import string, tempfile
+                    import string
                     # Build exactly N chain IDs (exclude A/B), prioritizing uppercase then digits then lowercase
                     N = len(_lengths)
                     pool = [c for c in string.ascii_uppercase if c not in ('A','B')]
@@ -1572,7 +1572,7 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         except UnboundLocalError:
             return None
 
-def openmm_relax_subprocess(pdb_file_path, output_pdb_path, use_gpu_relax=True, timeout=None, max_attempts=3):
+def openmm_relax_subprocess(pdb_file_path, output_pdb_path, use_gpu_relax=True, timeout=None, max_attempts=3, use_faspr_repack=True):
     """Run openmm_relax in a fresh Python process to fully reset OpenCL context per run.
     Retries if the child fell back to copying input (soft failure) or if the child crashes (hard failure).
     Streams child logs to parent stdout/stderr so DEBUG lines are visible.
@@ -1596,7 +1596,7 @@ def openmm_relax_subprocess(pdb_file_path, output_pdb_path, use_gpu_relax=True, 
     code_parts.append("logging.getLogger('pyrosetta.distributed.utility.pickle').setLevel(logging.WARNING)")
     code_parts.append("from functions.pr_alternative_utils import openmm_relax")
     code_parts.append(
-        f"plat = openmm_relax({pdb_file_path!r}, {output_pdb_path!r}, use_gpu_relax={bool(use_gpu_relax)})"
+        f"plat = openmm_relax({pdb_file_path!r}, {output_pdb_path!r}, use_gpu_relax={bool(use_gpu_relax)}, use_faspr_repack={bool(use_faspr_repack)})"
     )    
     py_code = "; ".join(code_parts)
 
