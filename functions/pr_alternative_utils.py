@@ -65,6 +65,7 @@ import tempfile
 import subprocess
 import contextlib
 import time
+import pathlib
 from itertools import zip_longest
 from .generic_utils import clean_pdb
 from .logging_utils import vprint
@@ -903,7 +904,6 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
     platform_name_used : str or None
         Name of the OpenMM platform actually used (e.g., 'CUDA', 'OpenCL', or 'CPU').
     """
-
     start_time = time.time()
     basename = os.path.basename(pdb_file_path)
     vprint(f"[OpenMM-Relax] Initiating relax for {basename}")
@@ -1580,6 +1580,14 @@ def openmm_relax_subprocess(pdb_file_path, output_pdb_path, use_gpu_relax=True, 
     import logging as _logging
     want_verbose = _logging.getLogger("functions").isEnabledFor(_logging.DEBUG)
 
+    # Change in cwd is needed when running outside of code directory
+    # parents[1] is the directory above the current one
+    cwd = pathlib.Path(__file__).parents[1].resolve()
+    
+    # also resolve input/output to allow for running outside of main code repo
+    pdb_file_path = str(pathlib.Path(pdb_file_path).resolve())
+    output_pdb_path = str(pathlib.Path(output_pdb_path).resolve())
+
     code_parts = []
     if want_verbose:
         code_parts.append(
@@ -1602,12 +1610,12 @@ def openmm_relax_subprocess(pdb_file_path, output_pdb_path, use_gpu_relax=True, 
 
     # Signature to detect soft fallback path inside child (input copied to output)
     fallback_signature = "[OpenMM-Relax] ERROR; copied input to output"
-
+    
     attempts = int(max(1, int(max_attempts)))
     for attempt_idx in range(1, attempts + 1):
         # Capture output to inspect for fallback while still forwarding to parent
         proc = subprocess.run(
-            [sys.executable, "-c", py_code], timeout=timeout, capture_output=True, text=True
+            [sys.executable, "-c", py_code], timeout=timeout, capture_output=True, text=True, cwd=cwd
         )
 
         # Forward child output to parent streams to preserve visibility, but filter stderr

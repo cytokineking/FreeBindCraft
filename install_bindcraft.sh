@@ -168,7 +168,7 @@ wget -O "${params_file}" "https://storage.googleapis.com/alphafold/alphafold_par
 
 # extract AF2 weights
 tar tf "${params_file}" >/dev/null 2>&1 || { echo -e "Error: Corrupt AlphaFold2 weights download"; exit 1; }
-tar -xvf "${params_file}" -C "${params_dir}" || { echo -e "Error: Failed to extract AlphaFold2weights"; exit 1; }
+tar -xvf "${params_file}" -C "${params_dir}" --no-same-owner || { echo -e "Error: Failed to extract AlphaFold2weights"; exit 1; }
 [ -f "${params_dir}/params_model_5_ptm.npz" ] || { echo -e "Error: Could not locate extracted AlphaFold2 weights"; exit 1; }
 rm "${params_file}" || { echo -e "Warning: Failed to remove AlphaFold2 weights archive"; }
 
