@@ -367,25 +367,32 @@ def migrate_csv_columns(csv_path, expected_columns):
     if existing_columns == expected_columns:
         return False
     
-    # Build a new dataframe with expected columns in correct order
-    migrated_df = pd.DataFrame()
+    # Check if we actually need to add any new columns
+    new_cols = set(expected_columns) - set(existing_columns)
+    needs_reorder = existing_columns != expected_columns
     
+    if not new_cols and not needs_reorder:
+        return False
+    
+    # Build column data dictionary efficiently (avoids fragmentation warnings)
+    col_data = {}
     for col in expected_columns:
         if col in existing_columns:
-            migrated_df[col] = df[col]
+            col_data[col] = df[col].values
         else:
             # New column - fill with None for existing rows
-            migrated_df[col] = None
+            col_data[col] = [None] * len(df)
     
-    # Check if we actually added any new columns
-    new_cols = set(expected_columns) - set(existing_columns)
+    # Create DataFrame in one shot from dictionary (efficient, no warnings)
+    migrated_df = pd.DataFrame(col_data, columns=expected_columns)
+    
     if new_cols:
         print(f"Migrating {os.path.basename(csv_path)}: adding columns {new_cols}")
         migrated_df.to_csv(csv_path, index=False)
         return True
     
     # Columns might just be reordered (shouldn't happen, but handle gracefully)
-    if existing_columns != expected_columns:
+    if needs_reorder:
         print(f"Reordering columns in {os.path.basename(csv_path)}")
         migrated_df.to_csv(csv_path, index=False)
         return True
