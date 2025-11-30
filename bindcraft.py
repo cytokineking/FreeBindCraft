@@ -86,6 +86,9 @@ parser.add_argument('--no-animations', action='store_true',
                     help='Disable saving design animations (overrides advanced settings)')
 parser.add_argument('--interactive', action='store_true',
                     help='Force interactive mode to collect target settings and options')
+parser.add_argument('--rank-by', type=str, default='i_pTM',
+                    choices=['i_pTM', 'ipSAE'],
+                    help='Metric to rank final designs by (default: i_pTM)')
 
 args = parser.parse_args()
 
@@ -123,12 +126,6 @@ def _prompt_interactive_and_prepare_args(args):
     advanced_dir = os.path.join(base_dir, 'settings_advanced')
 
     print("\nBindCraft Interactive Setup\n")
-    # Container plan state shared across confirmation
-    container_plan = {
-        "use": False,
-        "image": None,
-        "gpu_idx": None
-    }
 
     while True:
         # Design type selection
@@ -275,49 +272,15 @@ def _prompt_interactive_and_prepare_args(args):
         if not run_with_pyrosetta:
             debug_pdbs = _yes_no("Write intermediate debug PDBs during OpenMM relax?", default_yes=False)
 
-        # Container selection BEFORE final confirmation
-        container_plan = {k: None for k in container_plan}  # reset plan
-        container_plan["use"] = _yes_no("Run using a Docker container?", default_yes=False)
-        if container_plan["use"]:
-            # Launch new container from image only
-            # Try to enumerate local images for convenience
-            images_list = []
-            try:
-                img_proc = subprocess.run(["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"], capture_output=True, text=True)
-                for ln in img_proc.stdout.strip().splitlines():
-                    name = ln.strip()
-                    if not name or name == "<none>:<none>":
-                        continue
-                    images_list.append(name)
-                # Deduplicate while preserving order
-                seen = set()
-                images_list = [x for x in images_list if not (x in seen or seen.add(x))]
-            except Exception:
-                images_list = []
-
-            selected_image = None
-            if images_list:
-                print("\nLocal Docker images:")
-                for idx, name in enumerate(images_list, 1):
-                    print(f"{idx}. {name}")
-                print("0. Enter image name manually")
-                choice = _input_with_default("Choose image (press Enter for freebindcraft:latest):", "")
-                if not choice:
-                    selected_image = "freebindcraft:latest"
-                else:
-                    try:
-                        cidx = int(choice)
-                        if cidx == 0:
-                            selected_image = None
-                        elif 1 <= cidx <= len(images_list):
-                            selected_image = images_list[cidx - 1]
-                    except Exception:
-                        selected_image = None
-            if not selected_image:
-                selected_image = _input_with_default("Docker image to use (default freebindcraft:latest):", "freebindcraft:latest")
-
-            container_plan["image"] = selected_image
-            container_plan["gpu_idx"] = _input_with_default("GPU index to expose (default 0):", "0")
+        # Ranking method selection
+        print("\nRanking method for final designs:")
+        print("1. i_pTM (interface predicted TM-score)")
+        print("2. ipSAE (interface predicted Structural Alignment Error)")
+        rank_choice = _input_with_default("Choose ranking method (press Enter for i_pTM):", "")
+        if rank_choice.strip() == '2':
+            rank_by_metric = 'ipSAE'
+        else:
+            rank_by_metric = 'i_pTM'
 
         # Summary for confirmation
         print("\nConfiguration Summary:")
@@ -337,10 +300,7 @@ def _prompt_interactive_and_prepare_args(args):
         print(f"Plots: {'On' if plots_on else 'Off'}")
         print(f"Animations: {'On' if animations_on else 'Off'}")
         print(f"PyRosetta: {'On' if run_with_pyrosetta else 'Off'}")
-        if container_plan["use"]:
-            print(f"Docker: Yes (launch new container) -> image={container_plan['image']} gpu={container_plan['gpu_idx']}")
-        else:
-            print("Docker: No")
+        print(f"Ranking Method: {rank_by_metric}")
 
         if _yes_no("Proceed with these settings?", default_yes=True):
             break
@@ -377,40 +337,7 @@ def _prompt_interactive_and_prepare_args(args):
     args.no_plots = (not plots_on)
     args.no_animations = (not animations_on)
     args.no_pyrosetta = (not run_with_pyrosetta)
-
-    # Execute container plan if selected
-    if container_plan["use"] and container_plan["image"]:
-        docker_image = container_plan["image"]
-        gpu_idx = container_plan["gpu_idx"] or "0"
-
-        mounts = []
-        cwd = os.getcwd()
-        mounts.append((cwd, cwd))
-        pdb_parent = os.path.dirname(pdb_path)
-        if pdb_parent and os.path.abspath(pdb_parent) != cwd:
-            mounts.append((pdb_parent, pdb_parent))
-        mounts.append((output_dir, output_dir))
-
-        docker_cmd = [
-            "docker", "run", "--rm", "-it",
-            "--gpus", f"device={gpu_idx}",
-        ]
-        for host, cont in mounts:
-            docker_cmd.extend(["-v", f"{host}:{cont}"])
-        docker_cmd.extend(["-w", cwd, docker_image, "python", "bindcraft.py",
-                           "-s", args.settings, "-f", args.filters, "-a", args.advanced])
-        if args.no_pyrosetta:
-            docker_cmd.append("--no-pyrosetta")
-        if args.verbose:
-            docker_cmd.append("--verbose")
-        if args.debug_pdbs:
-            docker_cmd.append("--debug-pdbs")
-        if args.no_plots:
-            docker_cmd.append("--no-plots")
-        if args.no_animations:
-            docker_cmd.append("--no-animations")
-        subprocess.run(docker_cmd, check=False)
-        sys.exit(0)
+    args.rank_by = rank_by_metric
 
     return args
 
@@ -545,7 +472,9 @@ accepted_designs = 0
 ### start design loop
 while True:
     ### check if we have the target number of binders
-    final_designs_reached = check_accepted_designs(design_paths, mpnn_csv, final_labels, final_csv, advanced_settings, target_settings, design_labels)
+    # Map CLI metric name to CSV column name (e.g., 'i_pTM' -> 'Average_i_pTM')
+    rank_by_column = f"Average_{args.rank_by}"
+    final_designs_reached = check_accepted_designs(design_paths, mpnn_csv, final_labels, final_csv, advanced_settings, target_settings, design_labels, rank_by=rank_by_column)
 
     if final_designs_reached:
         # stop design loop execution
@@ -626,6 +555,7 @@ while True:
             # save trajectory statistics into CSV
             trajectory_data = [design_name, advanced_settings["design_algorithm"], length, seed, helicity_value, target_settings["target_hotspot_residues"], trajectory_sequence, trajectory_interface_residues, 
                                 trajectory_metrics['plddt'], trajectory_metrics['ptm'], trajectory_metrics['i_ptm'], trajectory_metrics['pae'], trajectory_metrics['i_pae'],
+                                trajectory_metrics.get('ipSAE', None),
                                 trajectory_i_plddt, trajectory_ss_plddt, num_clashes_trajectory, num_clashes_relaxed, trajectory_interface_scores['binder_score'],
                                 trajectory_interface_scores['surface_hydrophobicity'], trajectory_interface_scores['interface_sc'], trajectory_interface_scores['interface_packstat'],
                                 trajectory_interface_scores['interface_dG'], trajectory_interface_scores['interface_dSASA'], trajectory_interface_scores['interface_dG_SASA_ratio'],
@@ -851,7 +781,7 @@ while True:
 
                         # Insert statistics about MPNN design into CSV, will return None if corresponding model does note exist
                         model_numbers = range(1, 6)
-                        statistics_labels = ['pLDDT', 'pTM', 'i_pTM', 'pAE', 'i_pAE', 'i_pLDDT', 'ss_pLDDT', 'Unrelaxed_Clashes', 'Relaxed_Clashes', 'Binder_Energy_Score', 'Surface_Hydrophobicity',
+                        statistics_labels = ['pLDDT', 'pTM', 'i_pTM', 'pAE', 'i_pAE', 'ipSAE', 'i_pLDDT', 'ss_pLDDT', 'Unrelaxed_Clashes', 'Relaxed_Clashes', 'Binder_Energy_Score', 'Surface_Hydrophobicity',
                                             'ShapeComplementarity', 'PackStat', 'dG', 'dSASA', 'dG/dSASA', 'Interface_SASA_%', 'Interface_Hydrophobicity', 'n_InterfaceResidues', 'n_InterfaceHbonds', 'InterfaceHbondsPercentage',
                                             'n_InterfaceUnsatHbonds', 'InterfaceUnsatHbondsPercentage', 'Interface_Helix%', 'Interface_BetaSheet%', 'Interface_Loop%', 'Binder_Helix%',
                                             'Binder_BetaSheet%', 'Binder_Loop%', 'InterfaceAAs', 'Hotspot_RMSD', 'Target_RMSD']
