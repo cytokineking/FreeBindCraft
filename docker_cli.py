@@ -250,6 +250,16 @@ def main() -> None:
         animations_on = yes_no("Enable saving animations?", default_yes=True)
         run_with_pyrosetta = yes_no("Run with PyRosetta?", default_yes=True)
 
+        # Ranking method selection
+        print("\nRanking method for final designs:")
+        print("1. i_pTM (interface predicted TM-score)")
+        print("2. ipSAE (interface predicted Structural Alignment Error)")
+        rank_choice = input_with_default("Choose ranking method (press Enter for i_pTM):", "")
+        if rank_choice.strip() == '2':
+            rank_by_metric = 'ipSAE'
+        else:
+            rank_by_metric = 'i_pTM'
+
         # Summary
         print("\nConfiguration Summary:")
         print(f"Docker Image: {selected_image}")
@@ -268,6 +278,7 @@ def main() -> None:
         print(f"Plots: {'On' if plots_on else 'Off'}")
         print(f"Animations: {'On' if animations_on else 'Off'}")
         print(f"PyRosetta: {'On' if run_with_pyrosetta else 'Off'}")
+        print(f"Ranking Method: {rank_by_metric}")
 
         if yes_no("Proceed with these settings?", default_yes=True):
             # Materialize target settings JSON
@@ -318,6 +329,8 @@ def main() -> None:
                 cmd.append("--no-plots")
             if not animations_on:
                 cmd.append("--no-animations")
+            if rank_by_metric != 'i_pTM':
+                cmd.extend(["--rank-by", rank_by_metric])
 
             print("\nLaunching Docker:")
             print(" ".join(cmd))

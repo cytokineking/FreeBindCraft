@@ -19,6 +19,25 @@ The `--no-pyrosetta` flag, usable during both installation and runtime, enables 
 
 **Important Note:** Rosetta-specific metrics that lack open-source equivalents are not computed; placeholder values are used where needed for compatibility with default filters. Evaluate design quality accordingly.
 
+## ipSAE Scoring
+
+FreeBindCraft includes support for **ipSAE (interface predicted Structural Alignment Error)**, a metric for evaluating protein-protein interface quality based on AlphaFold's PAE matrix. This implementation is based on [Dunbrack et al. (2025)](https://www.biorxiv.org/content/10.1101/2025.02.10.637595v1).
+
+**What is ipSAE?**
+- ipSAE transforms interface PAE values using a PTM-style scoring function with adaptive normalization
+- Higher scores indicate better predicted interface quality (range 0–1)
+- Unlike i_pTM which uses a global d0, ipSAE uses per-residue d0 based on the number of interface contacts
+- ipSAE is computed for both trajectory statistics and final MPNN design statistics
+
+**Ranking by ipSAE:**
+By default, final designs are ranked by `i_pTM`. You can optionally rank by `ipSAE` instead:
+
+```bash
+python bindcraft.py --settings ... --rank-by ipSAE
+```
+
+The interactive CLI (both local and Docker) also prompts for ranking method selection.
+
 ### Technical Overview & Rationale
 
 For the motivation behind the PyRosetta bypass, implementation details (OpenMM relax, FreeSASA/Biopython SASA, `sc-rs` shape complementarity), and empirical impact on filter decisions, see the in-depth technical overview:
@@ -94,10 +113,9 @@ If you run BindCraft without `--settings` in a terminal (TTY) or pass `--interac
     - Peptides: default length 8–25; filters limited to `peptide_filters`, `peptide_relaxed_filters`, `no_filters`; advanced limited to peptide profiles
     - Miniproteins: default length 65–150 (min ≥31); filters limited to `default_filters`, `relaxed_filters`, `no_filters`; advanced excludes peptide profiles
   - Verbose logging, plots, animations, and whether to run with PyRosetta
-  - Optional: launch inside Docker by selecting an image and a single GPU index
+  - Ranking method for final designs: `i_pTM` (default) or `ipSAE`
 - Behavior:
   - Generates a target settings JSON inside your chosen output directory and then runs the standard pipeline
-  - When launching Docker from the wizard, the same host paths are mounted into the container and only one GPU is exposed
 
 ## Additional New CLI Flags 
 
@@ -107,6 +125,7 @@ You can further control runtime behavior with these flags:
 - `--debug-pdbs`: Write intermediate PDBs from OpenMM relax (`.debug_deconcat.pdb`, `.debug_pdbfixer.pdb`, `.debug_post_initial_relax.pdb`, `.debug_post_faspr.pdb`)
 - `--no-plots`: Disable saving design trajectory plots (overrides advanced settings).
 - `--no-animations`: Disable saving trajectory animations (overrides advanced settings).
+- `--rank-by {i_pTM,ipSAE}`: Metric to rank final designs by (default: `i_pTM`). Use `ipSAE` to rank by interface predicted Structural Alignment Error instead.
 
 Example:
 ```bash
@@ -114,7 +133,7 @@ python -u ./bindcraft.py \
   --settings './settings_target/your_target.json' \
   --filters './settings_filters/default_filters.json' \
   --advanced './settings_advanced/default_4stage_multimer.json' \
-  --no-animations --no-plots --verbose
+  --no-animations --no-plots --verbose --rank-by ipSAE
 ```
 
 ## Containerized usage (Docker)
@@ -228,7 +247,7 @@ python docker_cli.py
 This wizard:
 - Lists local Docker images and lets you choose one (defaults to `freebindcraft:gpu` if present, or enter another local image tag such as `freebindcraft:pyrosetta`)
 - Asks for a single GPU index to expose
-- Prompts for all inputs identical to the local interactive CLI (design type, validated PDB path, output directory auto-created, chains, hotspots, peptide/miniprotein-specific filters and advanced profiles, verbose/plots/animations, PyRosetta)
+- Prompts for all inputs identical to the local interactive CLI (design type, validated PDB path, output directory auto-created, chains, hotspots, peptide/miniprotein-specific filters and advanced profiles, verbose/plots/animations, PyRosetta, ranking method)
 - Writes a target settings JSON into your chosen output directory
 - Launches `docker run --rm -it --gpus device=<idx>` with host paths mounted to identical locations in the container so your paths work unchanged
 
@@ -240,6 +259,7 @@ On completion or Ctrl+C, the container exits and is auto-removed; outputs persis
 - FreeSASA (SASA): [https://github.com/mittinatten/freesasa](https://github.com/mittinatten/freesasa)
 - FASPR (Side-chain Packing): [https://github.com/tommyhuangthu/FASPR](https://github.com/tommyhuangthu/FASPR)
 - Biopython: [https://biopython.org](https://biopython.org)
+- ipSAE (interface predicted Structural Alignment Error): [Dunbrack et al. 2025](https://www.biorxiv.org/content/10.1101/2025.02.10.637595v1)
 
 ## Extras: Analysis and Utility Scripts
 
