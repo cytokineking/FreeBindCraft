@@ -86,6 +86,9 @@ parser.add_argument('--no-animations', action='store_true',
                     help='Disable saving design animations (overrides advanced settings)')
 parser.add_argument('--interactive', action='store_true',
                     help='Force interactive mode to collect target settings and options')
+parser.add_argument('--rank-by', type=str, default='i_pTM',
+                    choices=['i_pTM', 'ipSAE'],
+                    help='Metric to rank final designs by (default: i_pTM)')
 
 args = parser.parse_args()
 
@@ -545,7 +548,9 @@ accepted_designs = 0
 ### start design loop
 while True:
     ### check if we have the target number of binders
-    final_designs_reached = check_accepted_designs(design_paths, mpnn_csv, final_labels, final_csv, advanced_settings, target_settings, design_labels)
+    # Map CLI metric name to CSV column name (e.g., 'i_pTM' -> 'Average_i_pTM')
+    rank_by_column = f"Average_{args.rank_by}"
+    final_designs_reached = check_accepted_designs(design_paths, mpnn_csv, final_labels, final_csv, advanced_settings, target_settings, design_labels, rank_by=rank_by_column)
 
     if final_designs_reached:
         # stop design loop execution
@@ -626,6 +631,7 @@ while True:
             # save trajectory statistics into CSV
             trajectory_data = [design_name, advanced_settings["design_algorithm"], length, seed, helicity_value, target_settings["target_hotspot_residues"], trajectory_sequence, trajectory_interface_residues, 
                                 trajectory_metrics['plddt'], trajectory_metrics['ptm'], trajectory_metrics['i_ptm'], trajectory_metrics['pae'], trajectory_metrics['i_pae'],
+                                trajectory_metrics.get('ipSAE', None),
                                 trajectory_i_plddt, trajectory_ss_plddt, num_clashes_trajectory, num_clashes_relaxed, trajectory_interface_scores['binder_score'],
                                 trajectory_interface_scores['surface_hydrophobicity'], trajectory_interface_scores['interface_sc'], trajectory_interface_scores['interface_packstat'],
                                 trajectory_interface_scores['interface_dG'], trajectory_interface_scores['interface_dSASA'], trajectory_interface_scores['interface_dG_SASA_ratio'],
@@ -851,7 +857,7 @@ while True:
 
                         # Insert statistics about MPNN design into CSV, will return None if corresponding model does note exist
                         model_numbers = range(1, 6)
-                        statistics_labels = ['pLDDT', 'pTM', 'i_pTM', 'pAE', 'i_pAE', 'i_pLDDT', 'ss_pLDDT', 'Unrelaxed_Clashes', 'Relaxed_Clashes', 'Binder_Energy_Score', 'Surface_Hydrophobicity',
+                        statistics_labels = ['pLDDT', 'pTM', 'i_pTM', 'pAE', 'i_pAE', 'ipSAE', 'i_pLDDT', 'ss_pLDDT', 'Unrelaxed_Clashes', 'Relaxed_Clashes', 'Binder_Energy_Score', 'Surface_Hydrophobicity',
                                             'ShapeComplementarity', 'PackStat', 'dG', 'dSASA', 'dG/dSASA', 'Interface_SASA_%', 'Interface_Hydrophobicity', 'n_InterfaceResidues', 'n_InterfaceHbonds', 'InterfaceHbondsPercentage',
                                             'n_InterfaceUnsatHbonds', 'InterfaceUnsatHbondsPercentage', 'Interface_Helix%', 'Interface_BetaSheet%', 'Interface_Loop%', 'Binder_Helix%',
                                             'Binder_BetaSheet%', 'Binder_Loop%', 'InterfaceAAs', 'Hotspot_RMSD', 'Target_RMSD']

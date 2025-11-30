@@ -18,13 +18,13 @@ from .logging_utils import vprint
 # Define labels for dataframes
 def generate_dataframe_labels():
     # labels for trajectory
-    trajectory_labels = ['Design', 'Protocol', 'Length', 'Seed', 'Helicity', 'Target_Hotspot', 'Sequence', 'InterfaceResidues', 'pLDDT', 'pTM', 'i_pTM', 'pAE', 'i_pAE', 'i_pLDDT', 'ss_pLDDT', 'Unrelaxed_Clashes',
+    trajectory_labels = ['Design', 'Protocol', 'Length', 'Seed', 'Helicity', 'Target_Hotspot', 'Sequence', 'InterfaceResidues', 'pLDDT', 'pTM', 'i_pTM', 'pAE', 'i_pAE', 'ipSAE', 'i_pLDDT', 'ss_pLDDT', 'Unrelaxed_Clashes',
                         'Relaxed_Clashes', 'Binder_Energy_Score', 'Surface_Hydrophobicity', 'ShapeComplementarity', 'PackStat', 'dG', 'dSASA', 'dG/dSASA', 'Interface_SASA_%', 'Interface_Hydrophobicity', 'n_InterfaceResidues',
                         'n_InterfaceHbonds', 'InterfaceHbondsPercentage', 'n_InterfaceUnsatHbonds', 'InterfaceUnsatHbondsPercentage', 'Interface_Helix%', 'Interface_BetaSheet%', 'Interface_Loop%',
                         'Binder_Helix%', 'Binder_BetaSheet%', 'Binder_Loop%', 'InterfaceAAs', 'Target_RMSD', 'TrajectoryTime', 'Notes', 'TargetSettings', 'Filters', 'AdvancedSettings']
 
     # labels for mpnn designs
-    core_labels = ['pLDDT', 'pTM', 'i_pTM', 'pAE', 'i_pAE', 'i_pLDDT', 'ss_pLDDT', 'Unrelaxed_Clashes', 'Relaxed_Clashes', 'Binder_Energy_Score', 'Surface_Hydrophobicity',
+    core_labels = ['pLDDT', 'pTM', 'i_pTM', 'pAE', 'i_pAE', 'ipSAE', 'i_pLDDT', 'ss_pLDDT', 'Unrelaxed_Clashes', 'Relaxed_Clashes', 'Binder_Energy_Score', 'Surface_Hydrophobicity',
                     'ShapeComplementarity', 'PackStat', 'dG', 'dSASA', 'dG/dSASA', 'Interface_SASA_%', 'Interface_Hydrophobicity', 'n_InterfaceResidues', 'n_InterfaceHbonds', 'InterfaceHbondsPercentage',
                     'n_InterfaceUnsatHbonds', 'InterfaceUnsatHbondsPercentage', 'Interface_Helix%', 'Interface_BetaSheet%', 'Interface_Loop%', 'Binder_Helix%', 
                     'Binder_BetaSheet%', 'Binder_Loop%', 'InterfaceAAs', 'Hotspot_RMSD', 'Target_RMSD', 'Binder_pLDDT', 'Binder_pTM', 'Binder_pAE', 'Binder_RMSD']
@@ -143,12 +143,12 @@ def check_n_trajectories(design_paths, advanced_settings):
         return False
 
 # Check if we have required number of accepted targets, rank them, and analyse sequence and structure properties
-def check_accepted_designs(design_paths, mpnn_csv, final_labels, final_csv, advanced_settings, target_settings, design_labels):
+def check_accepted_designs(design_paths, mpnn_csv, final_labels, final_csv, advanced_settings, target_settings, design_labels, rank_by='Average_i_pTM'):
     t0 = time.time()
     accepted_binders = [f for f in os.listdir(design_paths["Accepted"]) if f.endswith('.pdb') and not f.startswith('.')]
 
     if len(accepted_binders) >= target_settings["number_of_final_designs"]:
-        print(f"Target number {str(len(accepted_binders))} of designs reached! Reranking...")
+        print(f"Target number {str(len(accepted_binders))} of designs reached! Reranking by {rank_by}...")
 
         # clear the Ranked folder in case we added new designs in the meantime so we rerank them all
         for f in os.listdir(design_paths["Accepted/Ranked"]):
@@ -156,7 +156,7 @@ def check_accepted_designs(design_paths, mpnn_csv, final_labels, final_csv, adva
 
         # load dataframe of designed binders
         design_df = pd.read_csv(mpnn_csv)
-        design_df = design_df.sort_values('Average_i_pTM', ascending=False)
+        design_df = design_df.sort_values(rank_by, ascending=False)
         
         # create final csv dataframe to copy matched rows, initialize with the column labels
         final_df = pd.DataFrame(columns=final_labels)

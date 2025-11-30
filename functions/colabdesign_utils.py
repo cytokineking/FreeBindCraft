@@ -18,6 +18,7 @@ from .biopython_utils import hotspot_residues, calculate_clash_score, calc_ss_pe
 from .pyrosetta_utils import pr_relax, align_pdbs
 from .generic_utils import update_failures
 from .logging_utils import vprint
+from .ipsae_utils import calculate_ipsae
 
 # hallucinate a binder
 def binder_hallucination(design_name, starting_pdb, chain, target_hotspot_residues, length, seed, helicity_value, design_models, advanced_settings, design_paths, failure_csv):
@@ -252,6 +253,19 @@ def binder_hallucination(design_name, starting_pdb, chain, target_hotspot_residu
         with open(os.path.join(design_paths["Trajectory/Pickle"], design_name+".pickle"), 'wb') as handle:
             pickle.dump(af_model.aux['all'], handle, protocol=pickle.HIGHEST_PROTOCOL)
 
+    # Calculate and display ipSAE for completed trajectory
+    if af_model.aux["log"]["terminate"] == "":
+        try:
+            traj_pae_matrix = np.array(af_model._tmp["best"]["aux"]["pae"])
+            traj_ipsae = calculate_ipsae(traj_pae_matrix, af_model._target_len, length)
+            af_model.aux["log"]["ipSAE"] = traj_ipsae['ipSAE']
+            print(f"Trajectory ipSAE: {traj_ipsae['ipSAE']:.4f}")
+        except Exception as e:
+            af_model.aux["log"]["ipSAE"] = None
+            vprint(f"[AF2] Could not calculate trajectory ipSAE: {e}")
+    else:
+        af_model.aux["log"]["ipSAE"] = None
+
     return af_model
 
 # run prediction for binder with masked template target
@@ -277,13 +291,24 @@ def predict_binder_complex(prediction_model, binder_sequence, mpnn_design_name, 
             prediction_model.save_pdb(complex_pdb)
             prediction_metrics = copy_dict(prediction_model.aux["log"]) # contains plddt, ptm, i_ptm, pae, i_pae
 
+            # Calculate ipSAE from full PAE matrix
+            try:
+                pae_matrix = np.array(prediction_model.aux["pae"])
+                target_len = prediction_model._target_len
+                binder_len = prediction_model._binder_len
+                ipsae_result = calculate_ipsae(pae_matrix, target_len, binder_len)
+                ipsae_score = ipsae_result['ipSAE']
+            except Exception:
+                ipsae_score = None
+
             # extract the statistics for the model
             stats = {
                 'pLDDT': round(prediction_metrics['plddt'], 2), 
                 'pTM': round(prediction_metrics['ptm'], 2), 
                 'i_pTM': round(prediction_metrics['i_ptm'], 2), 
                 'pAE': round(prediction_metrics['pae'], 2), 
-                'i_pAE': round(prediction_metrics['i_pae'], 2)
+                'i_pAE': round(prediction_metrics['i_pae'], 2),
+                'ipSAE': ipsae_score
             }
             prediction_stats[model_num+1] = stats
 
