@@ -331,6 +331,67 @@ def load_af2_models(af_multimer_setting):
 
     return design_models, prediction_models, multimer_validation
 
+# migrate existing CSV to include new columns (backwards compatibility)
+def migrate_csv_columns(csv_path, expected_columns):
+    """
+    Migrate existing CSV to include new columns added in later versions.
+    
+    Inserts missing columns at their correct positions with None values
+    for existing rows, ensuring backwards compatibility when resuming jobs.
+    
+    Args:
+        csv_path: Path to the CSV file
+        expected_columns: List of column names in the expected order
+    
+    Returns:
+        True if migration was performed, False if no migration needed
+    """
+    if not os.path.exists(csv_path):
+        return False
+    
+    try:
+        df = pd.read_csv(csv_path)
+    except pd.errors.EmptyDataError:
+        # Empty file, will be recreated with correct headers
+        return False
+    except Exception as e:
+        print(f"Warning: Could not read {csv_path} for migration: {e}")
+        return False
+    
+    if df.empty and len(df.columns) == 0:
+        return False
+    
+    existing_columns = list(df.columns)
+    
+    # Check if migration is needed
+    if existing_columns == expected_columns:
+        return False
+    
+    # Build a new dataframe with expected columns in correct order
+    migrated_df = pd.DataFrame()
+    
+    for col in expected_columns:
+        if col in existing_columns:
+            migrated_df[col] = df[col]
+        else:
+            # New column - fill with None for existing rows
+            migrated_df[col] = None
+    
+    # Check if we actually added any new columns
+    new_cols = set(expected_columns) - set(existing_columns)
+    if new_cols:
+        print(f"Migrating {os.path.basename(csv_path)}: adding columns {new_cols}")
+        migrated_df.to_csv(csv_path, index=False)
+        return True
+    
+    # Columns might just be reordered (shouldn't happen, but handle gracefully)
+    if existing_columns != expected_columns:
+        print(f"Reordering columns in {os.path.basename(csv_path)}")
+        migrated_df.to_csv(csv_path, index=False)
+        return True
+    
+    return False
+
 # create csv for insertion of data
 def create_dataframe(csv_file, columns):
     t0 = time.time()
