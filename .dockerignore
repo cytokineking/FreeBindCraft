@@ -16,3 +16,24 @@ __pycache__
 
 # OS
 .DS_Store
+
+# Local environments, model downloads, and generated runs
+.venv*/
+venv/
+env/
+.local/
+.cache/
+params/
+runs/
+output/
+outputs/
+results/
+*.log
+
+# Local configuration and credentials
+.env
+.env.*
+.aws/
+.ssh/
+.codex/
+.agents/

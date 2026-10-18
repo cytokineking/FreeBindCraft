@@ -46,30 +46,62 @@ For the motivation behind the PyRosetta bypass, implementation details (OpenMM r
 
 ## Installation
 
+### NVIDIA GPUs
+
 1.  Clone this modified repository:
     ```bash
     git clone https://github.com/cytokineking/FreeBindCraft [install_folder]
     ```
-2.  Navigate into your install folder (`cd [install_folder]`) and run the installation script. A CUDA-compatible Nvidia graphics card is required.
+2.  Navigate into your install folder (`cd [install_folder]`) and run the installation script. Linux x86_64, Conda or Mamba, Git, curl, a C compiler, and NVIDIA driver **575.57.08 or newer** are required.
+
+    Conda supplies Python 3.12 and native tools. The [tested pip profile](installation/linux-cuda12-requirements.txt) supplies JAX 0.11.2, NumPy 2.5.4, Flax 0.12.10, OpenMM 8.6.1, and their pinned CUDA 12.9 dependencies. A separately installed CUDA toolkit is not needed. ColabDesign and PDBFixer are pinned to tested commits.
 
     Installation script options:
-    *   `--cuda CUDAVERSION`: Specify your CUDA version (e.g., '12.4').
     *   `--pkg_manager MANAGER`: Specify 'mamba' or 'conda' (default: 'conda').
+    *   `--env-name NAME`: Choose the Conda environment name (default: `BindCraft`). Use a new name when migrating an existing Python 3.10 environment.
     *   `--no-pyrosetta`: **Use this flag to install without PyRosetta.**
-    *   `--fix-channels`: Fix conda channel configuration to resolve dependency conflicts (recommended if experiencing installation issues).
+    *   `--skip-gpu-check`: Skip GPU execution checks only when building a container image without GPU access.
+    *   The legacy `--cuda` and `--fix-channels` options remain accepted. CUDA libraries now come from pip, and the installer selects conda-forge without editing your channel configuration.
 
     **Example: PyRosetta-Free Installation**
     ```bash
-    bash install_bindcraft.sh --cuda '12.4' --pkg_manager 'conda' --no-pyrosetta
+    bash install_bindcraft.sh --no-pyrosetta
     ```
 
     **Example: Standard Installation (Includes PyRosetta)**
     If you choose to install with PyRosetta, a license is required for commercial use.
     ```bash
-    bash install_bindcraft.sh --cuda '12.4' --pkg_manager 'conda'
+    bash install_bindcraft.sh
     ```
 
+The installer checks real JAX GPU gradients and an OpenMM CUDA calculation. Activation selects CUDA for JAX and OpenMM and clears `LD_LIBRARY_PATH` so an ambient toolkit cannot replace pip's CUDA libraries; deactivation restores your previous settings. Completed model weights are reused when rerunning installation. To check an installed environment again:
+
+```bash
+conda activate BindCraft
+python extras/check_linux_installation.py --no-pyrosetta
+```
+
+Omit `--no-pyrosetta` from that check for a full installation. Installing with `--no-pyrosetta` omits the optional package; it does not uninstall PyRosetta from an existing environment.
+
 You can also run BindCraft entirely inside a Docker container without a local installation. See the Containerized usage section below for details and an interactive wrapper.
+
+### Apple Silicon (experimental)
+
+FreeBindCraft can run natively on Apple Silicon Macs, using the Apple GPU for
+AlphaFold and ProteinMPNN. The unified installer selects macOS automatically
+and includes native PyRosetta by default:
+
+```bash
+bash install_bindcraft.sh
+./run_apple_silicon.sh --settings settings_target/ubiquitin_apple_small.json \
+  --advanced settings_advanced/apple_silicon_ubiquitin_small.json --max-attempts 1
+```
+
+Add `--no-pyrosetta` to the installation command to omit it, or to the run command
+to select OpenMM/OpenCL relaxation in a full installation. Rosetta relaxation
+uses the CPU. Apple Command Line Tools are required; the remaining tools install
+inside the checkout. See the [Apple Silicon guide](APPLE_SILICON.md) for setup,
+examples, and tested performance.
 
 ## Running BindCraft
 
@@ -126,6 +158,8 @@ You can further control runtime behavior with these flags:
 - `--no-plots`: Disable saving design trajectory plots (overrides advanced settings).
 - `--no-animations`: Disable saving trajectory animations (overrides advanced settings).
 - `--rank-by {i_pTM,ipSAE}`: Metric to rank final designs by (default: `i_pTM`). Use `ipSAE` to rank by interface predicted Structural Alignment Error instead.
+- `--max-attempts N`: Stop after starting N trajectories, including rejected trajectories. Useful for a bounded local trial.
+- `--seed N`: Seed NumPy's trajectory and model sampling for reproducible checks within a pinned runtime. OpenMM MD and different GPU backends need not be bitwise reproducible.
 
 Example:
 ```bash
@@ -142,7 +176,7 @@ Run FreeBindCraft in a GPU-enabled Docker container (build locally).
 
 ### Prerequisites (on the host)
 
-- NVIDIA driver installed (check with `nvidia-smi`).
+- Linux x86_64 host with NVIDIA driver **575.57.08 or newer** (check with `nvidia-smi`).
 - Docker CE and NVIDIA Container Toolkit:
   - Linux (Ubuntu):
     1) Install Docker CE and restart the daemon.
@@ -150,7 +184,7 @@ Run FreeBindCraft in a GPU-enabled Docker container (build locally).
     3) `sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker`
   - Validate GPU availability inside containers:
     ```bash
-    docker run --rm --gpus all nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 nvidia-smi
+    docker run --rm --gpus all nvidia/cuda:12.9.1-base-ubuntu22.04 nvidia-smi
     ```
 
 ### Build the image from this repository
@@ -158,6 +192,16 @@ Run FreeBindCraft in a GPU-enabled Docker container (build locally).
 Build without PyRosetta (default):
 ```bash
 docker build -t freebindcraft:gpu .
+```
+
+The build downloads the model weights and installs the pinned pip CUDA 12.9
+profile. A GPU is needed only at runtime. Local environments, downloaded
+`params/`, and generated `runs/` are excluded from the build context.
+
+Check JAX gradients and OpenMM CUDA execution in the built image:
+```bash
+docker run --rm --gpus all freebindcraft:gpu \
+  python extras/check_linux_installation.py --no-pyrosetta
 ```
 
 Build with PyRosetta:
@@ -282,7 +326,7 @@ Pull requests are welcome.
 
 ## Known Issues
 
-- OpenMM GPU backend selection (OpenCL preferred over CUDA): We deliberately prefer OpenCL over CUDA for OpenMM relax because we have not been able to get the CUDA backend reliably working in our environments. OpenCL works, but it is less stable over long runs, so the relax step is executed in a subprocess for isolation and reliability. It also produces JIT log spam; see the next item for a suppression example.
+- OpenMM backend selection: The Linux installer and Docker image select the tested CUDA backend. The Apple Silicon profile uses OpenCL. Relaxation runs in a subprocess for isolation.
 - OpenCL JIT "log spam": You may see repeated lines such as "Failed to read file: /tmp/dep-76532a.d" emitted to stdout/stderr during OpenCL kernel builds.
   - Recommend line buffering to keep logs responsive when filtering
     - Combined output (preferred when piping/teeing):

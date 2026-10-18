@@ -1,0 +1,12 @@
+{
+  "design_path": "runs/ubiquitin-apple-example/output",
+  "binder_name": "UBQ",
+  "starting_pdb": "./example/ubiquitin_1ubq.pdb",
+  "chains": "A",
+  "target_hotspot_residues": "44",
+  "lengths": [
+    70,
+    70
+  ],
+  "number_of_final_designs": 1
+}

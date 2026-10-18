@@ -1,4 +1,5 @@
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+# The pinned pip profile supplies CUDA libraries and cuDNN.
+FROM nvidia/cuda:12.9.1-base-ubuntu22.04
 
 LABEL org.opencontainers.image.source="https://github.com/cytokineking/FreeBindCraft"
 LABEL org.opencontainers.image.description="FreeBindCraft GPU (no PyRosetta)"
@@ -24,13 +25,6 @@ RUN apt-get update && \
       unzip && \
     rm -rf /var/lib/apt/lists/*
 
-# Install OpenCL ICD loader and tools; register NVIDIA OpenCL ICD
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ocl-icd-libopencl1 clinfo && \
-    rm -rf /var/lib/apt/lists/*
-RUN mkdir -p /etc/OpenCL/vendors && \
-    echo "libnvidia-opencl.so.1" > /etc/OpenCL/vendors/nvidia.icd
-
 # Install Miniforge (Conda) at /miniforge3
 ENV CONDA_DIR=/miniforge3
 RUN wget -q https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O /tmp/miniforge.sh && \
@@ -55,23 +49,25 @@ RUN chmod +x /app/functions/dssp || true && \
     chmod +x /app/functions/sc || true
 
 # Build environment and download AF2 weights without PyRosetta
-# Match CUDA to base image; installer pins jax/jaxlib=0.6.0
+# The installer supplies the pinned pip CUDA 12 profile; builds need no GPU.
 # Allow toggling PyRosetta install at build-time
 ARG WITH_PYROSETTA=false
 ENV WITH_PYROSETTA=${WITH_PYROSETTA}
 RUN bash -lc 'source ${CONDA_DIR}/etc/profile.d/conda.sh && \
     EXTRA=""; if [ "${WITH_PYROSETTA}" != "true" ]; then EXTRA="--no-pyrosetta"; fi; \
-    bash /app/install_bindcraft.sh --pkg_manager conda --cuda 12.1 ${EXTRA}'
+    bash /app/install_bindcraft.sh --pkg_manager conda --skip-gpu-check ${EXTRA} && \
+    conda clean -afy && rm -rf /root/.cache/pip'
 
 # Default environment
 ENV PATH=${CONDA_DIR}/envs/BindCraft/bin:${CONDA_DIR}/bin:${PATH} \
-    LD_LIBRARY_PATH=${CONDA_DIR}/envs/BindCraft/lib:${LD_LIBRARY_PATH} \
+    LD_LIBRARY_PATH="" \
+    JAX_PLATFORMS=cuda \
     PYTHONUNBUFFERED=1 \
     BINDCRAFT_HOME=/app
 
-# Prefer OpenCL (fallback to CUDA) in OpenMM by default
-ENV OPENMM_PLATFORM_ORDER=OpenCL,CUDA \
-    OPENMM_DEFAULT_PLATFORM=OpenCL
+# Use the CUDA plugin shipped with the tested OpenMM profile.
+ENV OPENMM_PLATFORM_ORDER=CUDA \
+    OPENMM_DEFAULT_PLATFORM=CUDA
 
 # Modal-compatible entrypoint that execs args
 COPY docker-entrypoint.sh /usr/local/bin/bindcraft-entrypoint.sh

@@ -1,0 +1,5 @@
+# Optional add-on for the pinned Python 3.12 Apple Silicon environment.
+# Install with --no-deps after syncing apple-silicon-requirements.txt.
+--no-index
+--find-links https://west.rosettacommons.org/pyrosetta/quarterly/release/
+pyrosetta==2026.29+releasequarterly.80a0635615

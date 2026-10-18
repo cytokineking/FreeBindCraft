@@ -211,15 +211,18 @@ def load_helicity(advanced_settings):
 def check_jax_gpu():
     devices = jax.devices()
 
-    has_gpu = any(device.platform == 'gpu' for device in devices)
+    has_gpu = any(device.platform.lower() in ('gpu', 'metal') for device in devices)
 
     if not has_gpu:
-        print("No GPU device found, terminating.")
-        exit()
+        raise RuntimeError("No supported JAX GPU device found.")
     else:
-        print("Available GPUs:")
+        print("Available JAX devices:")
         for i, device in enumerate(devices):
             print(f"{device.device_kind}{i + 1}: {device.platform}")
+        if jax.default_backend().lower() == 'metal':
+            from .metal_utils import enable_metal_alignment
+            enable_metal_alignment()
+            print("Enabled GPU quaternion alignment for JAX Metal (no CPU fallback).")
 
 # check all input files being passed
 def perform_input_check(args):
@@ -253,9 +256,9 @@ def perform_advanced_settings_check(advanced_settings, bindcraft_folder):
         if not advanced_settings["af_params_dir"]:
             advanced_settings["af_params_dir"] = bindcraft_folder
         if not advanced_settings["dssp_path"]:
-            advanced_settings["dssp_path"] = os.path.join(bindcraft_folder, 'functions', 'dssp')
+            advanced_settings["dssp_path"] = os.environ.get('DSSP_BIN') or os.path.join(bindcraft_folder, 'functions', 'dssp')
         if not advanced_settings["dalphaball_path"]:
-            advanced_settings["dalphaball_path"] = os.path.join(bindcraft_folder, 'functions', 'DAlphaBall.gcc')
+            advanced_settings["dalphaball_path"] = os.environ.get('DALPHABALL_BIN') or os.path.join(bindcraft_folder, 'functions', 'DAlphaBall.gcc')
 
     # check formatting of omit_AAs setting
         omit_aas = advanced_settings["omit_AAs"]

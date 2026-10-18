@@ -130,7 +130,7 @@ def _calculate_shape_complementarity(pdb_file_path, binder_chain="B", target_cha
         start_time = time.time()
         basename = os.path.basename(pdb_file_path)
         vprint(f"[SC-RS] Initiating shape complementarity for {basename} (target={target_chain}, binder={binder_chain})")
-        # Resolve sc-rs binary: local next to this file, then env vars, then PATH
+        # Explicit overrides take precedence over the bundled Linux executable.
         module_dir = os.path.dirname(os.path.abspath(__file__))
         local_candidates = [
             os.path.join(module_dir, 'sc'),
@@ -145,7 +145,7 @@ def _calculate_shape_complementarity(pdb_file_path, binder_chain="B", target_cha
         ]
 
         sc_bin = None
-        for candidate in local_candidates + env_candidates + path_candidates:
+        for candidate in env_candidates + local_candidates + path_candidates:
             if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
                 sc_bin = candidate
                 break
@@ -807,10 +807,12 @@ def _add_hydrogens_and_minimize(pdb_in_path, pdb_out_path, platform_order=None,
         props = {}
         sim = None
         if platform_order is None:
-            platform_order = ['OpenCL', 'CUDA', 'CPU']
+            platform_order = (['Metal', 'OpenCL', 'CUDA', 'CPU'] if sys.platform == 'darwin'
+                              else ['OpenCL', 'CUDA', 'CPU'])
         for p_name in platform_order:
             try:
                 platform_obj = Platform.getPlatformByName(p_name)
+                props = {}
                 if p_name == 'CUDA':
                     props = {'CudaPrecision': 'mixed'}
                 elif p_name == 'OpenCL':
@@ -1094,12 +1096,13 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         else:
             platform_order = []
             if use_gpu_relax:
-                # Prefer OpenCL, then CUDA (override with env if needed)
+                # Native Apple Metal when available; retain Linux GPU support.
                 env_order = os.environ.get('OPENMM_PLATFORM_ORDER')
                 if env_order:
                     platform_order = [p.strip() for p in env_order.split(',') if p.strip()]
                 else:
-                    platform_order.extend(['OpenCL', 'CUDA'])
+                    platform_order.extend(['Metal', 'OpenCL', 'CUDA'] if sys.platform == 'darwin'
+                                          else ['OpenCL', 'CUDA'])
             else:
                 # Explicit CPU-only path if GPU is not requested
                 platform_order.append('CPU')
@@ -1340,6 +1343,7 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
         # 5. Optional FASPR repacking and standardized cleanup
         faspr_seconds = None
         faspr_success = False
+        post_min_platform = None
         post_min_seconds = None
         if use_faspr_repack:
             try:
@@ -1371,9 +1375,9 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                 if faspr_success:
                     # Add hydrogens and a brief, standardized minimization, then overwrite output
                     if post_faspr_minimize:
-                        _, post_min_seconds = _add_hydrogens_and_minimize(
+                        post_min_platform, post_min_seconds = _add_hydrogens_and_minimize(
                             tmp_faspr_out, output_pdb_path,
-                            platform_order=['OpenCL', 'CUDA', 'CPU'],
+                            platform_order=[platform_name_used],
                             force_tolerance_kj_mol_nm=openmm_final_force_tolerance_kj_mol_nm,
                             max_iterations=300
                         )
@@ -1534,6 +1538,7 @@ def openmm_relax(pdb_file_path, output_pdb_path, use_gpu_relax=True,
                 _perf["faspr_seconds"] = faspr_seconds
                 _perf["faspr_success"] = bool(faspr_success)
                 _perf["post_faspr_min_seconds"] = post_min_seconds
+                _perf["post_faspr_min_platform"] = post_min_platform
             perf_report.update(_perf)
         vprint(f"[OpenMM-Relax] Completed relax for {basename} in {elapsed_total:.2f}s (platform={platform_name_used})")
         

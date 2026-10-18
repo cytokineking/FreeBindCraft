@@ -1,0 +1,4 @@
+# Optional add-on for the Python 3.12 Linux environment; install with --no-deps.
+--no-index
+--find-links https://west.rosettacommons.org/pyrosetta/quarterly/release/
+pyrosetta==2026.29+releasequarterly.80a0635615

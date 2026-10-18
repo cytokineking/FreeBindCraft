@@ -75,7 +75,11 @@ parser.add_argument('--filters', '-f', type=str, default='./settings_filters/def
 parser.add_argument('--advanced', '-a', type=str, default='./settings_advanced/default_4stage_multimer.json',
                     help='Path to the advanced.json file with additional design settings. If not provided, default will be used.')
 parser.add_argument('--no-pyrosetta', action='store_true',
-                    help='Run without PyRosetta (skips relaxation and PyRosetta-based scoring)')
+                    help='Use OpenMM relaxation and open-source scoring instead of PyRosetta')
+parser.add_argument('--max-attempts', type=int, default=None,
+                    help='Stop after this many new trajectories, including rejected ones')
+parser.add_argument('--seed', type=int, default=None,
+                    help='Seed trajectory length/model sampling for reproducible local checks')
 parser.add_argument('--verbose', action='store_true',
                     help='Enable detailed timing/progress logs')
 parser.add_argument('--debug-pdbs', action='store_true',
@@ -91,6 +95,10 @@ parser.add_argument('--rank-by', type=str, default='i_pTM',
                     help='Metric to rank final designs by (default: i_pTM)')
 
 args = parser.parse_args()
+if args.max_attempts is not None and args.max_attempts < 1:
+    parser.error('--max-attempts must be positive')
+if args.seed is not None:
+    np.random.seed(args.seed)
 
 def _isatty_stdin():
     try:
@@ -474,6 +482,7 @@ print(f"Filtering designs based on {filters_file}")
 script_start_time = time.time()
 trajectory_n = 1
 accepted_designs = 0
+attempted_trajectories = 0
 
 ### start design loop
 while True:
@@ -484,6 +493,11 @@ while True:
 
     if final_designs_reached:
         # stop design loop execution
+        break
+
+    # Finalize accepted designs before stopping at the attempt limit.
+    if args.max_attempts is not None and attempted_trajectories >= args.max_attempts:
+        print(f"Attempt limit of {args.max_attempts} reached, stopping execution.")
         break
 
     ### check if we reached maximum allowed trajectories
@@ -512,6 +526,7 @@ while True:
     trajectory_exists = any(os.path.exists(os.path.join(design_paths[trajectory_dir], design_name + ".pdb")) for trajectory_dir in trajectory_dirs)
 
     if not trajectory_exists:
+        attempted_trajectories += 1
         print("Starting trajectory: "+design_name)
 
         ### Begin binder hallucination
@@ -938,4 +953,4 @@ while True:
 ### Script finished
 elapsed_time = time.time() - script_start_time
 elapsed_text = f"{'%d hours, %d minutes, %d seconds' % (int(elapsed_time // 3600), int((elapsed_time % 3600) // 60), int(elapsed_time % 60))}"
-print("Finished all designs. Script execution for "+str(trajectory_n)+" trajectories took: "+elapsed_text)
+print("Finished run. Script execution for "+str(attempted_trajectories)+" attempted trajectories took: "+elapsed_text)
