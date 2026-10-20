@@ -6,6 +6,7 @@ import os
 import stat
 import math
 import gc
+import warnings
 import numpy as np
 from collections import defaultdict
 from scipy.spatial import cKDTree
@@ -18,6 +19,30 @@ from .logging_utils import vprint
 
 # Global cache for DSSP results to reduce redundant calculations
 _dssp_cache = {}
+
+def _run_dssp(model, pdb_file, dssp_path):
+    """Keep DSSP diagnostics except its harmless PDB format probe on success."""
+    result = None
+    notices = []
+    try:
+        with warnings.catch_warnings(record=True) as notices:
+            result = DSSP(model, pdb_file, dssp=dssp_path)
+        return result
+    finally:
+        for notice in notices:
+            # Biopython warns on any stderr, including this successful fallback.
+            # Do not hide failures, empty results, or additional diagnostics.
+            harmless_pdb_probe = (
+                result is not None and len(result) > 0
+                and os.fspath(pdb_file).lower().endswith(('.pdb', '.ent'))
+                and notice.category is UserWarning
+                and notice.filename.replace('\\', '/').endswith('/Bio/PDB/DSSP.py')
+                and str(notice.message).strip() ==
+                'parse error at line 1: This file does not seem to be an mmCIF file'
+            )
+            if not harmless_pdb_probe:
+                warnings.warn_explicit(notice.message, notice.category,
+                                       notice.filename, notice.lineno)
 
 def safe_dssp_calculation(model, pdb_file, dssp_path, max_retries=3):
     """
@@ -46,13 +71,13 @@ def safe_dssp_calculation(model, pdb_file, dssp_path, max_retries=3):
 
             # Primary attempt with configured path
             try:
-                dssp = DSSP(model, pdb_file, dssp=dssp_path)
+                dssp = _run_dssp(model, pdb_file, dssp_path)
             except Exception as primary_error:
                 # Fallback to system-installed mkdssp/dssp if available on PATH
                 last_error = primary_error
                 for alt_cmd in ("mkdssp", "dssp"):
                     try:
-                        dssp = DSSP(model, pdb_file, dssp=alt_cmd)
+                        dssp = _run_dssp(model, pdb_file, alt_cmd)
                         last_error = None
                         break
                     except Exception as e_alt:

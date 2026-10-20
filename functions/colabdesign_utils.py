@@ -4,6 +4,8 @@
 ### Import dependencies
 import os, re, shutil, math, pickle
 import time
+import warnings
+import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 import numpy as np
 import jax
@@ -19,6 +21,24 @@ from .pyrosetta_utils import pr_relax, align_pdbs
 from .generic_utils import update_failures
 from .logging_utils import vprint
 from .ipsae_utils import calculate_ipsae
+
+def save_design_animation(af_model, output_path):
+    """Render optional ColabDesign output without losing a completed design."""
+    try:
+        # Pinned ColabDesign uses the legacy API removed in Matplotlib 3.9.
+        # pyplot.get_cmap retains its name/Colormap/None and LUT semantics.
+        if not hasattr(cm, "get_cmap"):
+            cm.get_cmap = plt.get_cmap
+        animation = af_model.animate(dpi=150)
+        with open(output_path, 'w') as stream:
+            stream.write(animation)
+        return True
+    except Exception as error:
+        warnings.warn(f"Could not save design animation {output_path}: {error}. "
+                      "Continuing with relaxation and scoring.", RuntimeWarning)
+        return False
+    finally:
+        plt.close('all')
 
 # hallucinate a binder
 def binder_hallucination(design_name, starting_pdb, chain, target_hotspot_residues, length, seed, helicity_value, design_models, advanced_settings, design_paths, failure_csv):
@@ -244,10 +264,8 @@ def binder_hallucination(design_name, starting_pdb, chain, target_hotspot_residu
 
     ### save the hallucination trajectory animation
     if advanced_settings.get("save_design_animations", True):
-        plots = af_model.animate(dpi=150)
-        with open(os.path.join(design_paths["Trajectory/Animation"], design_name+".html"), 'w') as f:
-            f.write(plots)
-        plt.close('all')
+        save_design_animation(af_model, os.path.join(
+            design_paths["Trajectory/Animation"], design_name+".html"))
 
     if advanced_settings["save_trajectory_pickle"]:
         with open(os.path.join(design_paths["Trajectory/Pickle"], design_name+".pickle"), 'wb') as handle:
