@@ -93,6 +93,24 @@ to CUDA has not been established.
 In OpenMM mode, Rosetta-only metrics use compatibility placeholders rather than
 measured Rosetta scores, as in FreeBindCraft's Linux bypass mode.
 
+### Optional MetalJAX loop compilation fix
+
+A source patch for MetalJAX 0.11.9 fixes nested AlphaFold loops that otherwise
+silently fall back to eager execution. After installing the pinned environment:
+
+```bash
+.venv-metaljax/bin/python installation/build_metaljax_apple.py --install
+```
+
+This builds a local `0.11.9+fbc1` wheel using the release's unchanged MLX runtime.
+The initial XLA build can take several minutes and needs network access and
+Apple Command Line Tools. The patch preserves model settings and gradients;
+compiled execution uses more memory on the measured 128 GB M5 Max fixture.
+See the [source patch, build provenance and validation](installation/metaljax/README.md)
+for reproduction commands, measurements and limitations. Smaller Macs have not
+been validated with this patch. Set `FREEBINDCRAFT_METALJAX_WHEEL` to the built
+wheel's absolute path to explicitly select it when rerunning the Apple installer.
+
 ## Verify the installation
 
 Run the Metal alignment tests and native OpenMM/DSSP/ProteinMPNN check:

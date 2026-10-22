@@ -103,6 +103,14 @@ if [[ "$install_pyrosetta" == true ]]; then
 else
   .local/bin/uv pip sync --python .venv-metaljax/bin/python installation/apple-silicon-requirements.txt
 fi
+if [[ -n "${FREEBINDCRAFT_METALJAX_WHEEL:-}" ]]; then
+  [[ -f "$FREEBINDCRAFT_METALJAX_WHEEL" ]] || {
+    echo "MetalJAX wheel not found: $FREEBINDCRAFT_METALJAX_WHEEL" >&2
+    exit 1
+  }
+  .local/bin/uv pip install --python .venv-metaljax/bin/python --no-deps --reinstall \
+    "$FREEBINDCRAFT_METALJAX_WHEEL"
+fi
 
 ensure_source() {
   local url="$1" destination="$2" revision="$3"
