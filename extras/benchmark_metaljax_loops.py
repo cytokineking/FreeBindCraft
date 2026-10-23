@@ -37,9 +37,15 @@ def main():
     parser.add_argument('--repeats', type=int, default=6)
     parser.add_argument('--name', required=True)
     parser.add_argument('--dump-hlo', action='store_true')
+    parser.add_argument('--pdb', type=Path, help='Target PDB; defaults to the bundled ubiquitin fixture')
+    parser.add_argument('--chain', default='A')
+    parser.add_argument('--binder-length', type=int, default=70)
+    parser.add_argument('--hotspot', default='44')
     args = parser.parse_args()
     if args.repeats < 1:
         parser.error('--repeats must be positive')
+    if args.binder_length < 1:
+        parser.error('--binder-length must be positive')
     if jax.default_backend() != 'metal':
         parser.error('This probe requires JAX_PLATFORMS=metal')
     root = Path(__file__).resolve().parents[1]
@@ -60,8 +66,9 @@ def main():
     model = mk_afdesign_model(protocol='binder', use_multimer=True,
                              data_dir=str(args.assets), num_recycles=1, use_remat=True,
                              model_names=['model_1_multimer_v3'])
-    model.prep_inputs(pdb_filename=str(args.assets/'example/ubiquitin_1ubq.pdb'),
-                      chain='A', binder_len=70, hotspot='44', seed=42, rm_aa='C')
+    target = args.pdb or args.assets/'example/ubiquitin_1ubq.pdb'
+    model.prep_inputs(pdb_filename=str(target), chain=args.chain,
+                      binder_len=args.binder_length, hotspot=args.hotspot, seed=42, rm_aa='C')
     model.opt.update(dropout=True, soft=0.9, hard=0.0, temp=1.0)
     model.opt['weights'].update(plddt=0.1, pae=0.4, i_pae=0.1, con=1., i_con=1.)
     model.opt['con'].update(num=2, cutoff=14., binary=False, seqsep=9)
@@ -117,6 +124,8 @@ def main():
         plugin=os.environ.get('METALJAX_PLUGIN_PATH', 'installed'),
         use_bfloat16=model._args['use_bfloat16'], use_remat=model._args['use_remat'],
         subbatch=model._cfg.model.global_config.subbatch_size, length=length,
+        target_pdb_sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
+        chain=args.chain, binder_length=args.binder_length, hotspot=args.hotspot,
         model='model_1_multimer_v3', fixed_rng=True, dropout=True,
         sequence_sha256=digest(model._params['seq']), key_sha256=digest(key), previous_sha256=previous_hashes,
         setup_seconds=setup_seconds, first_forward_seconds=first_forward_seconds,

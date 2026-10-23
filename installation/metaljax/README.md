@@ -4,9 +4,96 @@ This patch fixes the compiled-loop fallbacks observed in FreeBindCraft's Apple
 AlphaFold workload. It changes only MetalJAX's Metal PJRT lowering/runtime and
 adds backend regression tests. FreeBindCraft's shared design functions, CUDA
 installation, model, precision, recycling, checkpointing and optimizer are
-unchanged. The Apple installer can explicitly select the resulting local wheel.
+unchanged. The Apple installer now downloads the frozen FreeBindCraft release
+wheel by default; no user build is needed.
 On the measured 146-residue M5 Max fixture, warmed gradients improved 1.71×
 and the full design stage improved 1.73×, with higher memory use.
+
+## Default installation and troubleshooting
+
+```bash
+bash install_bindcraft.sh
+# Add --no-pyrosetta to omit native Rosetta.
+```
+
+This selects `metaljax==0.11.9+fbc1`, with JAX/jaxlib `0.11.2`. The exact
+versioned wheel URL and expected SHA-256 are in `release.json` and
+`../apple-silicon-requirements.txt`. `install_apple_python.py` verifies the
+artifact before syncing Python dependencies, and prints the installed versions.
+The default requirements also contain the URL's SHA-256 fragment for direct uv
+use. There is no moving branch or latest-release lookup during installation.
+
+To troubleshoot with pinned stock upstream MetalJAX:
+
+```bash
+FREEBINDCRAFT_METALJAX=stock bash install_bindcraft.sh
+```
+
+Rerun the ordinary command with that variable unset to restore the frozen
+release. The selected wheel participates in a single dependency sync, so fresh
+installs, reruns and mode switches do not temporarily install another backend.
+Existing explicit `FREEBINDCRAFT_METALJAX_WHEEL=/absolute/path.whl` overrides take
+precedence over `stock` and the default. Local override bytes are chosen by the
+user and are outside the published release's expected-checksum guarantee.
+Unknown backend modes and missing overrides fail. A download/hash failure occurs
+before uv changes the target venv; a damaged cache is re-downloaded and verified.
+
+This selection happens only during installation. The backend retains its
+existing per-loop recovery. Memory-governor refusals propagate as errors and
+are not automatically retried eagerly. There are no dependency swaps or
+whole-job restarts. CUDA/Linux dependencies and shared scientific logic are
+unchanged.
+
+## Frozen fork and release
+
+- Fork: [cytokineking/metaljax](https://github.com/cytokineking/metaljax), verified
+  under the same owner as FreeBindCraft.
+- Source commit: `678c58eaaafc33c5b31bcc6b6d0176dd078f6063`.
+- Tag/release: [v0.11.9-fbc1](https://github.com/cytokineking/metaljax/releases/tag/v0.11.9-fbc1).
+- [Prebuilt wheel](https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc1/metaljax-0.11.9%2Bfbc1-py3-none-macosx_14_0_arm64.whl)
+  SHA-256: `8b3ec3bd4a71e57d7c77a0f3f8b1ee9fefe28b4ca81c0b325dc6d2975938d079`.
+- [Canonical release checksums](https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc1/SHA256SUMS.release.txt)
+  and [build provenance](https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc1/build-provenance.json).
+
+The fork commits the reviewed fix and regression tests directly on the frozen
+upstream base. Its default branch is `freebindcraft-0.11.9-fbc1`; installation
+uses the artifact and source commit pins, not that branch. Upstream authorship,
+Apache-2.0 licensing and bundled MLX MIT notices are retained in source and wheel.
+FreeBindCraft carries the reviewed patch as an audit artifact; the builder does
+**not** apply it again to the fork.
+
+The release archives the exact committed MetalJAX source, checksum-pinned XLA
+archive and Bazel 8.7.0 executable, staged reconstructed MLX SDK headers and
+unchanged runtime binaries, recipe and provenance. The source archive contains
+the four SDK-header patches. `build-provenance.json` records every compiled
+source hash, SDK file hash, compiler/SDK versions, runtime binary hashes, flags,
+JAX pins and the relationship to the reviewed build. The required private MLX
+runtime inputs are archived; this does not claim to build MLX from its
+unavailable stamped commit. XLA's transitive Bazel downloads remain pinned by
+its build rules, rather than all being mirrored in this release.
+
+The released wheel adds fork URLs and license notices to the original reviewed
+wheel. All seven runtime payload files, including the plugin, Python loaders,
+MLX dylibs and metallib, are byte-identical. The updated recipe, using the
+frozen source and archived inputs on the recorded compiler/SDK, reproduced the
+new wheel and native plugin hashes exactly. That rebuild used the existing
+Bazel action cache after verifying the source and inputs; it was not a second
+cold XLA build. A fresh public fork checkout also matched all 74 recorded
+compiled source files. Different compilers/SDKs/paths may produce different
+binaries; a local rebuild is not automatically a validated release.
+
+All uploaded/downloaded asset bytes were checked. Use the canonical
+`SHA256SUMS.release.txt` for downloaded filenames: the initial build-directory
+manifest names `.gitignore`, which GitHub renames `default.gitignore`. The
+canonical manifest was added under a new name; no published artifact or tag
+was overwritten.
+
+Future upgrades are deliberate: review a concrete source commit, create a new
+immutable version/tag/asset identity, record and preserve inputs, run compiler,
+numerical and memory checks, then update the installer URL/hash and compatible
+JAX/jaxlib pins in a reviewed FreeBindCraft change. No automatic upstream
+merges, dependency upgrades or runtime switching are enabled. Existing tags and
+published bytes must not be replaced.
 
 ## Cause and implementation
 
@@ -52,29 +139,33 @@ had the same tracer-evaluation cause. Disabling MLX fusion also retained them.
   maintainer-specific source paths, sets the macOS target for both host tools
   and plugin, keeps caches local, and packages `metaljax==0.11.9+fbc1`.
 
-After the ordinary Apple installation, build and install into this checkout's
-venv (first source build downloads/builds XLA and can take several minutes):
+Normal installation uses the prebuilt wheel. Maintainers can reproduce from the
+frozen fork and the release's archived build inputs after installing the pinned
+Apple environment:
 
 ```bash
-.venv-metaljax/bin/python installation/build_metaljax_apple.py --install
+.venv-metaljax/bin/python installation/build_metaljax_apple.py
+# Optional: --install installs the result only into the selected venv.
 ```
 
-The helper prints the wheel and `build-manifest.json` paths. To preserve that
-wheel when running the Apple installer explicitly:
+The helper checks out `678c58e` by full commit hash, checks both JAX pins,
+verifies every archived SDK/XLA file on reruns, rejects changed source/build
+configuration, uses a pinned hatchling, and prints the wheel and manifest paths.
+The first cold native build can take several minutes. Inputs, source checkouts
+and caches stay inside the checkout by default. The release also includes a
+standalone recipe archive with this script and `release.json`; unpack it in a
+working directory with uv on PATH, and pass
+`--python /absolute/path/to/the/pinned/venv/bin/python`.
 
-```bash
-FREEBINDCRAFT_METALJAX_WHEEL=/absolute/path/to/metaljax-0.11.9+fbc1-py3-none-macosx_14_0_arm64.whl \
-  bash install_apple_silicon.sh
-```
-
-The SDK only needs the normal Apple Command Line Tools: the release's metallib
-is reused, so this repair does not require the separate Metal shader toolchain.
-The helper refuses an unexpected source revision, changed prepared SDK sources,
-unverified runtime/archive, or a Python environment outside the pinned venv.
+Only the normal Apple Command Line Tools are needed: the original metallib is
+reused, so this build does not need the separate Metal shader toolchain.
+A maintainer can explicitly install a local rebuild on a subsequent installer
+run with `FREEBINDCRAFT_METALJAX_WHEEL=/absolute/path/to/the/built.whl`.
 
 ## Reproduce and test
 
-The actual build in this worktree used:
+The reviewed development build and the final frozen-recipe rebuild used the
+same source/cache locations (the fork now contains the fix):
 
 ```bash
 .venv-metaljax/bin/python installation/build_metaljax_apple.py \
@@ -225,8 +316,9 @@ relaxations were left unchanged.
 
 The extra memory is a material tradeoff: compiled bodies retain more
 intermediates than the previously flushing eager path. No memory/trace budget
-or checkpointing policy was changed. The 24 GiB M2 and larger targets have not
-been validated. CUDA/shared design source is untouched; no CUDA execution or
+or checkpointing policy was changed. The frozen build has not been validated on the physical 24 GiB M2. The
+additional bounded PDL1 and controlled-budget checks below extend fixture
+coverage on the M5 Max; they do not establish arbitrary target-size support. CUDA/shared design source is untouched; no CUDA execution or
 cross-backend numerical-equivalence claim is made.
 
 To repeat the full benchmark with the copied assets in this worktree, choose a
@@ -247,6 +339,91 @@ The executed command/environment records are in each monitor’s `metadata.json`
 and `paired-commands.json`. `validation.json` contains all warmed samples,
 per-process first calls/counters, memory peaks, fixture/source hashes and the
 full stage timings. The source rebuild check reproduced the SDK header patch
-stack from a new public checkout. Two wheel builds produced identical hashes:
+stack from a new public checkout. The original development recipe produced two byte-identical reviewed wheels:
 plugin `005ab1302a7f49ec27e1447ab31db89e78b0e22793e6e14cf66bfe7773dce2fd`,
 wheel `6e4b9ca8ad6e5dbaec3611d7fd827a48bd3bbb7710ac12911644739083eac50f`.
+
+## Published distribution validation
+
+The actual public release wheel was downloaded without GitHub authentication,
+checksum-verified and installed into a fresh isolated venv with all pinned Apple
+Python dependencies (without PyRosetta). The installer reported
+`0.11.9+fbc1`, JAX `0.11.2`, jaxlib `0.11.2`. Rerunning audited the existing
+packages. Switching to stock, rerunning stock, a fresh stock install, local
+override precedence (even over stock), switching back and corrupted-cache
+recovery all passed. An isolated copy of the real installer pins, with a
+deliberately wrong expected hash against the real public wheel URL, failed
+before uv ran and left the installed backend/versions unchanged; partial files
+were removed. Five focused installer tests cover these failure/selection
+contracts. The full native-tool/PyRosetta/weights bootstrap was not repeated;
+its Python dependency phase is the tested distribution path.
+
+The installed release wheel passed **72 tests**: the prior 57 compiler/control
+tests, 10 FreeBindCraft tests and five new installer tests. Two existing JAX
+deprecation warnings remain. The sandbox initially denied Metal device access;
+the successful GPU tests ran with the normal device-access exemption.
+
+Raw logs, installed wheel provenance, distribution checks and bounded probe
+outputs are in `runs/metaljax-release/`. The committed
+`release-validation.json` records the final measurements and checks.
+
+### Bounded larger-target and memory checks
+
+The release installed from the public URL was also compared to the actual
+stock opt-out installation on bundled PDL1 chain A: 115 target residues plus a
+70-residue binder, **185 residues total**, hotspot 56. The model, BF16/high
+precision, checkpointing, one recycle, production losses, dropout and seed 42
+were unchanged. The sequence/key hashes agree, and both gradients used the
+same frozen stock first-recycle state. All **18 saved output fields** and all
+three first-recycle tensors were bit-identical; gradient relative L2 and
+maximum absolute difference are zero. The released wheel also matched all
+18 saved fields of the earlier 146-residue stock baseline.
+
+Both PDL1 arms ran sequentially in fresh processes, with two warmed gradients,
+a 16 GiB governor process budget, a 24 GiB external process-tree RSS guard and
+a six-minute external limit. Neither guard fired. The governor's other memory
+settings were retained. Process physical footprint, not isolated GPU memory,
+peaked at **5.14 GiB stock / 10.43 GiB release**. Warm-gradient medians were
+4.710 / 2.575 seconds in this short pair; these timings are corroborative, not
+a new balanced performance estimate. No system swap growth was observed.
+
+The same release fixture under a **4 GiB** process policy and 250 ms stall
+setting completed through repeated reclamation/stalls, with all 18 fields
+still bit-identical. Its lifetime peak was **9.78 GiB**. The policy acts at
+sampling/admission checkpoints and can reclaim/stall after graph transients;
+it is **not a strict process peak-memory cap**. This is a material limitation
+when interpreting budget settings as protection on smaller machines.
+
+A deliberately tiny **256 MiB** policy with a 250 ms stall setting produced
+`RESOURCE_EXHAUSTED: metaljax out of memory at transfer`, exiting with status 1
+and no result file. The external monitor did not stop the job. The refusal
+propagated normally; there was no eager retry, dependency change or job restart.
+This exercised the transfer refusal path, not every allocation failure or
+possible driver failure. Neither imposed budget simulates a physical smaller
+Mac. The 24 GiB M2, arbitrary larger targets and higher recycle counts remain
+unvalidated with the frozen backend.
+
+For the larger comparison, use separate stock/release venvs installed with
+`installation/install_apple_python.py --python /path/to/venv/bin/python` and
+`FREEBINDCRAFT_METALJAX=stock` for the stock venv. Run each arm sequentially:
+
+```bash
+JAX_PLATFORMS=metal METALJAX_MATMUL_PRECISION=high METALJAX_MEM_BUDGET_MB=16384 \
+  /path/to/stock/venv/bin/python extras/benchmark_metaljax_loops.py \
+  --assets /path/to/installed/FreeBindCraft --pdb example/PDL1.pdb \
+  --hotspot 56 --binder-length 70 --out runs/my-release-check \
+  --name large-stock --repeats 2
+JAX_PLATFORMS=metal METALJAX_MATMUL_PRECISION=high METALJAX_MEM_BUDGET_MB=16384 \
+  /path/to/release/venv/bin/python extras/benchmark_metaljax_loops.py \
+  --assets /path/to/installed/FreeBindCraft --pdb example/PDL1.pdb \
+  --hotspot 56 --binder-length 70 --out runs/my-release-check \
+  --name large-fixed --repeats 2 \
+  --previous runs/my-release-check/large-stock-previous.npz
+```
+
+For an independent guard, wrap each command with
+`extras/monitor_macos_job.py --output-dir <fresh-monitor-directory> --interval 1
+--max-tree-rss-gib 24 --max-hours 0.1 -- <command>`. For the controlled policy
+checks, use 4096 or 256 for `METALJAX_MEM_BUDGET_MB`, set
+`METALJAX_MEM_STALL_MS=250` and `METALJAX_MEMDBG=1`, and choose new output paths.
+These settings are test inputs, not default installation or launcher changes.
