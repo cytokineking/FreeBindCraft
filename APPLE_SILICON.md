@@ -1,7 +1,7 @@
 # Apple Silicon (experimental)
 
 FreeBindCraft runs natively on Apple Silicon using
-[metaljax](https://github.com/eterevsky/metaljax) for AlphaFold design and
+[FreeBindCraft's frozen MetalJAX build](https://github.com/cytokineking/metaljax/releases/tag/v0.11.9-fbc1) for AlphaFold design and
 ProteinMPNN on the Apple GPU. Relaxation uses native PyRosetta on the CPU by
 default, or OpenMM on the GPU through OpenCL with `--no-pyrosetta`.
 
@@ -25,6 +25,26 @@ Dependencies install inside the checkout under `.venv-metaljax`, `.local`, and
 `params`. No Homebrew or global Conda environment is required. Rerun the default
 installation command to add PyRosetta later. FFmpeg is needed only for saving
 animations; the supplied small examples disable them.
+
+The default installs the prebuilt `metaljax==0.11.9+fbc1` arm64 macOS wheel.
+Its versioned release URL and SHA-256 are pinned, together with JAX/jaxlib
+`0.11.2`. There is no user source-build step or automatic upstream upgrade.
+The installer reports the selected backend and installed versions.
+
+For troubleshooting, install the pinned stock upstream `0.11.9` backend:
+
+```bash
+FREEBINDCRAFT_METALJAX=stock bash install_bindcraft.sh
+```
+
+Rerun `bash install_bindcraft.sh` with that variable unset to restore the frozen
+build. Both commands accept `--no-pyrosetta`. Reruns retain the selected version;
+switching modes explicitly replaces it. This is an installation choice, not a
+runtime fallback. A download/checksum failure stops installation before Python
+packages change. An explicit `FREEBINDCRAFT_METALJAX_WHEEL=/absolute/path.whl`
+developer override takes precedence over both modes; unset it to return to the
+published build. Local overrides are user-selected artifacts, outside the
+published-wheel checksum guarantee.
 
 ## Run a small example
 
@@ -63,12 +83,12 @@ It uses a 65-residue binder and writes to `runs/pdl1-apple-example/output`.
 
 ## Tested configuration and performance
 
-The pinned runtime uses Python 3.12, JAX/jaxlib 0.11.2, metaljax 0.11.9, and
+The pinned runtime uses Python 3.12, JAX/jaxlib 0.11.2, metaljax 0.11.9+fbc1, and
 OpenMM 8.6.1. Exact dependencies are recorded in the
 [Apple Silicon requirements](installation/apple-silicon-requirements.txt) and
 [PyRosetta requirements](installation/pyrosetta-apple-requirements.txt).
 
-Installation and pipeline execution have been tested on an M2 MacBook Pro with
+The earlier stock MetalJAX 0.11.9 installation and pipeline were tested on an M2 MacBook Pro with
 24 GiB unified memory (macOS 26.7) and an M5 Max MacBook Pro with 128 GB unified
 memory (macOS 27.0.1). In a full installation on the M2, the small ubiquitin
 example measured:
@@ -80,7 +100,9 @@ example measured:
 
 Both runs completed with zero accepted designs under the default filters.
 These are single-run measurements of process physical footprint; larger targets
-and higher recycle counts can require more memory.
+and higher recycle counts can require more memory. These M2 measurements use
+stock upstream MetalJAX, not the new default. The frozen build's validation is on
+the 128 GiB M5 Max; support on a physical smaller-memory Mac is not established.
 
 ## Backend behavior
 
@@ -92,6 +114,29 @@ to CUDA has not been established.
 
 In OpenMM mode, Rosetta-only metrics use compatibility placeholders rather than
 measured Rosetta scores, as in FreeBindCraft's Linux bypass mode.
+
+### Frozen MetalJAX backend and memory
+
+The default build fixes nested AlphaFold loops that otherwise silently retire
+their compiled variants. It keeps the existing calculation, precision,
+recycling, checkpointing and optimization behavior, and uses unchanged private
+MLX runtime binaries. The reviewed 146-residue fixture's warmed gradients were
+1.71× faster and its full design stage 1.73× faster on the M5 Max. Full-workflow
+peak physical footprint increased from 5.49 to 8.85 GiB.
+
+Existing per-loop recovery and memory safeguards remain enabled. A memory
+governor refusal propagates as an error; it does not guarantee eager recovery,
+swap dependencies or restart a design. Its budget is checked at admission and
+sampling points, and is not a strict peak-memory cap: the bounded PDL1 test
+reached 9.78 GiB transiently under a 4 GiB policy before reclaiming memory.
+The normal PDL1 forward/gradient probe used 10.43 GiB versus 5.14 GiB on stock.
+Use the explicit stock installation choice above when investigating
+memory/performance differences.
+
+See [release provenance, bounded larger-target and memory-budget validation,
+and maintainer build instructions](installation/metaljax/README.md). Future
+upgrades require a new reviewed source commit, versioned artifact and checksum;
+installation never follows a moving upstream branch.
 
 ## Verify the installation
 

@@ -12,6 +12,8 @@ for argument in "$@"; do
       printf 'Usage: %s [--with-pyrosetta | --no-pyrosetta]\n' "$0"
       printf 'Requires Apple Command Line Tools. Downloads local uv/Rust, Python dependencies,\n'
       printf 'native helpers, and AlphaFold weights. The default omits PyRosetta.\n'
+      printf 'MetalJAX: frozen FreeBindCraft wheel by default; FREEBINDCRAFT_METALJAX=stock opts out.\n'
+      printf 'FREEBINDCRAFT_METALJAX_WHEEL=/absolute/path.whl takes precedence over that selection.\n'
       exit 0 ;;
     *) echo "Unknown Apple installation option: $argument" >&2; exit 2 ;;
   esac
@@ -95,14 +97,10 @@ export RUSTUP_TOOLCHAIN=1.89.0
 if [[ ! -x .venv-metaljax/bin/python ]]; then
   .local/bin/uv venv --python 3.12.15 --managed-python .venv-metaljax
 fi
-if [[ "$install_pyrosetta" == true ]]; then
-  .local/bin/uv pip sync --python .venv-metaljax/bin/python \
-    --find-links https://west.rosettacommons.org/pyrosetta/quarterly/release/ \
-    installation/apple-silicon-requirements.txt \
-    <(sed '/^--/d' installation/pyrosetta-apple-requirements.txt)
-else
-  .local/bin/uv pip sync --python .venv-metaljax/bin/python installation/apple-silicon-requirements.txt
-fi
+python_options=(--python "$repo_dir/.venv-metaljax/bin/python" --uv "$repo_dir/.local/bin/uv")
+[[ "$install_pyrosetta" == true ]] && python_options+=(--with-pyrosetta)
+.venv-metaljax/bin/python installation/install_apple_python.py \
+  "${python_options[@]}"
 
 ensure_source() {
   local url="$1" destination="$2" revision="$3"
@@ -167,6 +165,7 @@ import openmm
 import colabdesign, freesasa, pdbfixer
 from functions.generic_utils import check_jax_gpu
 check_jax_gpu()
+print("MetalJAX version:", version("metaljax"), "JAX:", version("jax"), "jaxlib:", version("jaxlib"))
 print("JAX devices:", jax.devices())
 platforms = [openmm.Platform.getPlatform(i).getName()
              for i in range(openmm.Platform.getNumPlatforms())]
