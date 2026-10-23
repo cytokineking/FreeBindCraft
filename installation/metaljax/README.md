@@ -9,6 +9,10 @@ wheel by default; no user build is needed.
 On the measured 146-residue M5 Max fixture, warmed gradients improved 1.71×
 and the full design stage improved 1.73×, with higher memory use.
 
+The separate [attention epilogue experiment](attention/README.md) requires an
+explicit development build and opt-in flag. The release described here remains
+the default Apple dependency.
+
 ## Default installation and troubleshooting
 
 ```bash
