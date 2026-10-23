@@ -1,0 +1,9 @@
+[
+  {"name": "base", "env": {}},
+  {"name": "ops400", "env": {"MLX_MAX_OPS_PER_BUFFER": "400"}},
+  {"name": "ops200", "env": {"MLX_MAX_OPS_PER_BUFFER": "200"}},
+  {"name": "ops100", "env": {"MLX_MAX_OPS_PER_BUFFER": "100"}},
+  {"name": "flight4", "env": {"METALJAX_LOOP_INFLIGHT_MB": "4096"}},
+  {"name": "flight8", "env": {"METALJAX_LOOP_INFLIGHT_MB": "8192"}},
+  {"name": "transient", "env": {"METALJAX_CBUF_BYTES": "transient"}}
+]

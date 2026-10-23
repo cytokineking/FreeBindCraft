@@ -12,6 +12,9 @@ and the full design stage improved 1.73×, with higher memory use.
 The separate [attention epilogue experiment](attention/README.md) requires an
 explicit development build and opt-in flag. The release described here remains
 the default Apple dependency.
+The [submission scheduling experiments](scheduling/README.md) document bounded
+opt-in settings, their memory/time tradeoff, and profiling of the next backend
+optimization candidate.
 
 ## Default installation and troubleshooting
 

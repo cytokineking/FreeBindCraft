@@ -1,0 +1,106 @@
+diff --git a/plugin-native/runtime/control.cc b/plugin-native/runtime/control.cc
+--- a/plugin-native/runtime/control.cc
++++ b/plugin-native/runtime/control.cc
+@@ -56,6 +56,16 @@
+ }
+ 
+ namespace {
++
++// Optional CPU-only diagnostics. No GPU barriers or extra array references.
++bool ScheduleProfileActive() {
++  static const bool enabled = [] {
++    const char* v = std::getenv("FBC_SCHED_PROFILE");
++    return v && std::strcmp(v, "1") == 0;
++  }();
++  const char* phase = enabled ? std::getenv("FBC_PROFILE_ACTIVE") : nullptr;
++  return phase && phase[0] != '0';
++}
+ 
+ // The allocation failures MLX's Metal allocator raises from inside an eval
+ // walk (backend/metal/allocator.cpp): a request past the device's maximum
+@@ -241,10 +251,34 @@
+   // Wait for the oldest submissions until at most `keep` are left.
+   void keep_at_most(int64_t keep) {
+     while (static_cast<int64_t>(ring_.size()) > keep) {
++      const bool profile = ScheduleProfileActive();
++      const int64_t start = profile ? timing_now_ns() : 0;
++      if (profile) {
++        for (const mx::array& a : ring_.front()) {
++          ++events_;
++          mx::array probe(mx::Shape{}, mx::bool_, nullptr, {});
++          probe.attach_event(a.event());
++          probe.set_status(mx::array::Status::evaluated);
++          if (!probe.is_available()) ++not_ready_;
++        }
++      }
+       for (mx::array& a : ring_.front()) a.wait();
++      if (profile) {
++        const int64_t elapsed = timing_now_ns() - start;
++        wait_ns_ += elapsed;
++        max_wait_ns_ = std::max(max_wait_ns_, elapsed);
++      }
+       ring_.pop_front();
+       waits_++;
+     }
++  }
++
++  ~LoopWindow() {
++    if (ScheduleProfileActive())
++      std::fprintf(stderr, "[fbc-schedule-window] phase=%s waits=%lld events=%lld not_ready=%lld wait_ns=%lld max_wait_ns=%lld\n",
++                   std::getenv("FBC_PROFILE_ACTIVE"), (long long)waits_,
++                   (long long)events_, (long long)not_ready_,
++                   (long long)wait_ns_, (long long)max_wait_ns_);
+   }
+ 
+   bool empty() const { return ring_.empty(); }
+@@ -253,6 +284,7 @@
+  private:
+   std::deque<std::vector<mx::array>> ring_;
+   int64_t waits_ = 0;
++  int64_t events_ = 0, not_ready_ = 0, wait_ns_ = 0, max_wait_ns_ = 0;
+ };
+ 
+ int64_t active_bytes() { return static_cast<int64_t>(mx::get_active_memory()); }
+@@ -716,9 +748,13 @@
+                                           int64_t hard_every, int64_t cost,
+                                           int64_t budget, int64_t body_bytes) {
+   LoopWindow window;
++  const bool profile = ScheduleProfileActive();
++  int64_t build_ns = 0, submit_ns = 0;
++  const int64_t initial_start = profile ? timing_now_ns() : 0;
+   // (1)
+   vals = runner.run_one(vals);
+   loop_eval(vals);
++  const int64_t initial_ns = profile ? timing_now_ns() - initial_start : 0;
+   if (period == 1) loop_account(cost);
+ 
+   // What one iteration holds: the estimate until (2) reads it.  `how` says
+@@ -759,11 +795,15 @@
+       (void)DispatchSnapshotSettled();
+       before = active_bytes();
+     }
++    const int64_t build_start = profile ? timing_now_ns() : 0;
+     vals = runner.run_one(vals);
++    if (profile) build_ns += timing_now_ns() - build_start;
+     pending++;
+     if (probe || pending >= group) {
+       const bool async = submits_async(vals);
++      const int64_t submit_start = profile ? timing_now_ns() : 0;
+       loop_submit(vals);
++      if (profile) submit_ns += timing_now_ns() - submit_start;
+       submits++;
+       pending = 0;
+       // Right after an encode is where the window is fullest.
+@@ -795,6 +835,12 @@
+     }
+     if (i % period == 0) loop_account(period * cost);
+   }
++  if (profile)
++    std::fprintf(stderr, "[fbc-schedule-loop] phase=%s trip=%lld period=%lld unit=%lld budget=%lld group=%lld keep=%lld submits=%lld initial_ns=%lld build_ns=%lld submit_ns=%lld\n",
++                 std::getenv("FBC_PROFILE_ACTIVE"), (long long)trip,
++                 (long long)period, (long long)unit, (long long)budget,
++                 (long long)group, (long long)keep, (long long)submits,
++                 (long long)initial_ns, (long long)build_ns, (long long)submit_ns);
+   if (g_cfg.debug && body->narrate_window(group, keep))
+     debug_print("loop window: trip=" + std::to_string(trip) +
+                 " period=" + std::to_string(period) + " est=" +
