@@ -1,0 +1,85 @@
+{
+  "builder_sha256": "77575268c7d83e02bc1f575b4b190536c425d5cd6dbbb92ea4ffeb0b916c7ede",
+  "version": "0.11.9+fbc3attndev2",
+  "frozen_source_commit": "678c58eaaafc33c5b31bcc6b6d0176dd078f6063",
+  "frozen_release": {
+    "version": "0.11.9+fbc1",
+    "repository": "https://github.com/cytokineking/metaljax",
+    "source_commit": "678c58eaaafc33c5b31bcc6b6d0176dd078f6063",
+    "upstream_base": "7546eb93aa60c6570efdca95836276d03fe70a94",
+    "tag": "v0.11.9-fbc1",
+    "jax": "0.11.2",
+    "jaxlib": "0.11.2",
+    "wheel": {
+      "url": "https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc1/metaljax-0.11.9+fbc1-py3-none-macosx_14_0_arm64.whl",
+      "sha256": "8b3ec3bd4a71e57d7c77a0f3f8b1ee9fefe28b4ca81c0b325dc6d2975938d079"
+    },
+    "stock_wheel": {
+      "filename": "metaljax-0.11.9-py3-none-macosx_14_0_arm64.whl",
+      "sha256": "05ed087f0e8b307aaea0763e45f03e2123ea358de2c117c93e4dca25c882db7f",
+      "url": "https://files.pythonhosted.org/packages/17/b3/c7deaa5599ba600bcd8d2647fcb34e9ea424a2f628f34f1a62de5ca08260/metaljax-0.11.9-py3-none-macosx_14_0_arm64.whl"
+    },
+    "source_archive": {
+      "url": "https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc1/metaljax-0.11.9-fbc1-source.tar.gz",
+      "sha256": "30029c1cb2d5e8838a0ccfb92d23f9cafb49ac6fb201d4b1258f8a2437ca7972"
+    },
+    "mlx_sdk": {
+      "url": "https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc1/metaljax-fbc1-mlx-sdk.tar.gz",
+      "sha256": "64a2ed745b8d180b6323b3a8e9811b7ed4119dfcc1404e4b3365b5057dc0497b"
+    },
+    "xla": {
+      "url": "https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc1/xla-91888df6ce85102c30220e41d952065925e10886.tar.gz",
+      "sha256": "32cb8087d88318a01f9974ead6254e1ca06d263fa1847f61503379525bd46897",
+      "revision": "91888df6ce85102c30220e41d952065925e10886"
+    },
+    "bazel": {
+      "url": "https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc1/bazel-8.7.0-darwin-arm64",
+      "sha256": "575f20fb23955e02f73519befd180df635b4ed0960c60f0e70fcc8d74014a713"
+    },
+    "plugin_sha256": "005ab1302a7f49ec27e1447ab31db89e78b0e22793e6e14cf66bfe7773dce2fd",
+    "hatchling": "1.32.4"
+  },
+  "patches": {
+    "0001-bf16-attention-epilogues.patch": "36fa7ac3f6d169fe0e9176f4d819a38428369fe4ba105144bff26a8a037ced17"
+  },
+  "modified_source": {
+    "plugin-native/metal/BUILD": "2c42e9b3378f27b3f7fbed7f88a9fb87dc9d6de5c655c1a8d1281fdba3e836fc",
+    "plugin-native/metal/metal_evo_attention.cc": "6be0cc6b7127b56e40b2ec4f1b8dcfc765cca317a57bd091e28b409e4475c16a",
+    "plugin-native/metal/metal_lowering.cc": "d4462b2a54d3bb6f0fcb2dd47b627d564569cc215a6911c43d99756c84169912",
+    "plugin-native/metal/metal_qmm.cc": "e390ac75dec840fafcea785a4a4b4b7da5466c24576b9472d80fde9e23749acc",
+    "plugin-native/metal/metal_recognize.h": "5695d110693d18b1360da3af7bcd00065ddb79c5e9edba31abd6a4873e1a2498",
+    "plugin-native/runtime/BUILD": "d59a6f82162a0ae4b8130dafcfc75759c2553ac5e4d1c8cbcbef5970181df712",
+    "plugin-native/runtime/config.cc": "bb0976c6182c077463a751368d8441074ebfc236a376aa95e38bdcf8e659e2ce",
+    "plugin-native/runtime/emits.cc": "def92249388871ac4b96111869eb86277f8cbcf016ff18f0cf39997cdd869e44",
+    "plugin-native/runtime/evo_attention.cc": "4a61a47933ba94c0b5bd25bdd3c04d3a00b087f831e3526791b928521ac75c51",
+    "plugin-native/runtime/evo_attention.h": "f409b1cbac90f554de45d181fa8243d30c42203e56f9b82a91fd5e47daaa982a",
+    "plugin-native/runtime/program.h": "b0a19d7955ef285a0e569ee8a35ef0c764908aa2ada8a3b7dabc6a0a2d460206",
+    "pyproject.toml": "2625b4a1570ce63ad95414ab99315e803f6cba2ed3a4095558f47649b6ebdbd2",
+    "src/metaljax/__init__.py": "c9032ab3cfee8df7887f2f50bf6ce9f4f40412c4a3f74b8db2cbb6af61a7825b",
+    "tests/test_evo_attention.py": "4c06d6f5229dd15d0294caff3f0193065b34aa98558da9faf5dd601c3f91b718"
+  },
+  "diagnostic_profile": false,
+  "attention_enabled_by_default": false,
+  "build_flags": [
+    "--repositories_without_autoloads=cc_compatibility_proxy",
+    "--macos_minimum_os=14.0",
+    "--host_copt=--target=arm64-apple-macosx14.0",
+    "--host_linkopt=--target=arm64-apple-macosx14.0",
+    "--jobs=12",
+    "--disk_cache=/Users/aaronring/.codex/worktrees/c11c/FreeBindCraft/.local/bazel-disk-cache"
+  ],
+  "compiler": "Apple clang version 21.0.0 (clang-2100.3.34.2)\nTarget: arm64-apple-darwin27.0.0\nThread model: posix\nInstalledDir: /Library/Developer/CommandLineTools/usr/bin",
+  "python": "Python 3.12.15",
+  "uv": "uv 0.6.4 (04db70662 2025-03-03)",
+  "macos": "27.0.1",
+  "sdkroot": "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+  "jax": "0.11.2",
+  "jaxlib": "0.11.2",
+  "plugin_sha256": "19b28d865a0344768c75af9d25482dbc217954fa1b202e4b4258a7fb79bf9b2a",
+  "wheel_sha256": "bdd95090b974bec3e2afb5b675faf2f6c7363882381f6b8cfd9accf4b8dd5138",
+  "mlx_runtime": {
+    "libjaccl_metaljax.dylib": "48f5790b66a173170527e6ba7fac3e445787550851439870019581032d5448f9",
+    "libmlx_metaljax.dylib": "72dc8d9a4b1e07df2f6bc91383e0567acf3ce292398ae6ce4ed1d19fce0b1374",
+    "mlx.metallib": "ef1aa1ef9ef5b18bcef166b75b7b8865afe0f02f5e23980f2bdf76447fe60e6b"
+  }
+}

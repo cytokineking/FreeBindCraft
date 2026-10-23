@@ -1,0 +1,150 @@
+diff --git a/plugin-native/runtime/program.cc b/plugin-native/runtime/program.cc
+--- a/plugin-native/runtime/program.cc
++++ b/plugin-native/runtime/program.cc
+@@ -12,6 +12,7 @@
+ // program is entered. That line is the one a phase-2 compile path meets.
+ 
+ #include "program.h"
++#include "attention_profile.h"
+ 
+ #include <mlx/compile_impl.h>
+ 
+@@ -327,6 +328,13 @@
+ // vocabulary is exactly what they accept between them.
+ void Program::step(const Entry& e, std::vector<std::optional<mx::array>>& env,
+                    bool in_trace) const {
++  const std::string profile=AttentionProfileLabel(e,env);
++  std::optional<mx::array> saved;
++  auto profile_region=profile.empty()?nullptr:std::make_shared<AttentionProfileRegion>();
++  if(!profile.empty()){
++    std::vector<mx::array> xs;for(int id:e.ins)if(env[id])xs.push_back(*env[id]);
++    saved=env[e.ins[0]];env[e.ins[0]]=AttentionProfileMark(xs,profile,true,profile_region);
++  }
+   if (!(step_elementwise(e, env, in_trace) || step_shape(e, env, in_trace) ||
+         step_linalg(e, env, in_trace) || step_reduce(e, env, in_trace) ||
+         step_index(e, env, in_trace) || step_emit(e, env, in_trace) ||
+@@ -334,6 +342,9 @@
+         step_conv(e, env, in_trace) || step_host(e, env, in_trace)))
+     throw std::invalid_argument("tape: unknown opcode");
+ 
++  if(!profile.empty()){
++    env[e.ins[0]]=saved;env[e.outs[0]]=AttentionProfileMark({*env[e.outs[0]]},profile,false,profile_region);
++  }
+   // The emulated grids, in ONE place (see Entry::regrid). An entry whose
+   // result type is i4/ui4 or one of the OCP FP4/FP6 grids -- and the convert
+   // onto any emulated type -- rounds here, after the handler that computed
+diff --git a/plugin-native/runtime/attention_profile.h b/plugin-native/runtime/attention_profile.h
+new file mode 100644
+--- /dev/null
++++ b/plugin-native/runtime/attention_profile.h
+@@ -0,0 +1,10 @@
++// Diagnostic-only GPU fences for FreeBindCraft attention profiling.
++#pragma once
++#include "program.h"
++#include <mlx/backend/metal/metal.h>
++namespace metaljax {
++struct AttentionProfileRegion {mx::metal::DispatchStats before;bool overlap=false;};
++bool AttentionProfileEnabled();
++mx::array AttentionProfileMark(const std::vector<mx::array>&,const std::string&,bool,const std::shared_ptr<AttentionProfileRegion>&);
++std::string AttentionProfileLabel(const Entry&,const std::vector<std::optional<mx::array>>&);
++}
+diff --git a/plugin-native/runtime/attention_profile.cc b/plugin-native/runtime/attention_profile.cc
+new file mode 100644
+--- /dev/null
++++ b/plugin-native/runtime/attention_profile.cc
+@@ -0,0 +1,76 @@
++// Diagnostic-only: boundaries split command buffers, not production timing.
++#include "attention_profile.h"
++#include <mlx/primitives.h>
++#include <mlx/backend/metal/metal.h>
++#include <dlfcn.h>
++#include <cstdio>
++#include <cstdlib>
++#include <sstream>
++#include <stdexcept>
++#include <thread>
++#include <chrono>
++#include <algorithm>
++namespace mlx::core::metal {class CommandEncoder;}
++namespace metaljax {
++namespace {
++thread_local std::vector<AttentionProfileRegion*> active;
++void Sync(mx::Stream s) {
++  // Opaque exported frozen-runtime ABI; no Metal-cpp/object layout assumptions.
++  using Get=mx::metal::CommandEncoder&(*)(mx::Stream);
++  using Wait=void(*)(mx::metal::CommandEncoder*);
++  static auto get=reinterpret_cast<Get>(dlsym(RTLD_DEFAULT,"_ZN3mlx4core5metal19get_command_encoderENS0_6StreamE"));
++  static auto wait=reinterpret_cast<Wait>(dlsym(RTLD_DEFAULT,"_ZN3mlx4core5metal14CommandEncoder11synchronizeEv"));
++  if(!get||!wait)throw std::runtime_error("attention profile: missing frozen MLX sync ABI");
++  wait(&get(s));
++}
++mx::metal::DispatchStats SettledStats(){
++  auto s=mx::metal::dispatch_stats();auto deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(100);
++  while(s.completed_command_buffers<s.command_buffers&&std::chrono::steady_clock::now()<deadline){std::this_thread::yield();s=mx::metal::dispatch_stats();}
++  return s;
++}
++class Barrier:public mx::UnaryPrimitive {
++ public:
++  Barrier(mx::Stream s,std::string l,bool b,std::shared_ptr<AttentionProfileRegion> r):UnaryPrimitive(s),label_(std::move(l)),start_(b),region_(std::move(r)){}
++  const char* name()const override{return "FbcAttentionProfileBarrier";}
++  void eval_cpu(const std::vector<mx::array>&x,mx::array&o)override{o.copy_shared_buffer(x[0]);}
++  void eval_gpu(const std::vector<mx::array>&x,mx::array&o)override {
++    const char* phase=std::getenv("FBC_PROFILE_ACTIVE");
++    if(phase&&phase[0]!='0') {
++      Sync(stream());auto now=SettledStats();
++      auto& before=region_->before;
++      if(start_){
++        before=now;region_->overlap=!active.empty();
++        for(auto*r:active)r->overlap=true;
++        active.push_back(region_.get());
++      }
++      else std::fprintf(stderr,"[fbc-attn-profile] phase=%s op=%s ns=%llu dispatches=%llu cbufs=%llu wall_ns=%llu overlap=%d\n",phase,label_.c_str(),
++        (unsigned long long)(now.gpu_busy_ns-before.gpu_busy_ns),
++        (unsigned long long)(now.dispatches-before.dispatches),
++        (unsigned long long)(now.command_buffers-before.command_buffers),
++        (unsigned long long)(now.now_ns-before.now_ns),region_->overlap);
++      if(!start_)active.erase(std::remove(active.begin(),active.end(),region_.get()),active.end());
++    }
++    o.copy_shared_buffer(x[0]);
++  }
++ private:std::string label_;bool start_;std::shared_ptr<AttentionProfileRegion> region_;
++};
++}
++bool AttentionProfileEnabled(){static const bool on=[](){const char*s=std::getenv("FBC_ATTN_PROFILE");return s&&std::string(s)=="1";}();return on;}
++mx::array AttentionProfileMark(const std::vector<mx::array>&xs,const std::string&l,bool start,const std::shared_ptr<AttentionProfileRegion>&region){
++  return mx::array(xs[0].shape(),xs[0].dtype(),std::make_shared<Barrier>(mx::default_stream(mx::Device::gpu),l,start,region),xs);
++}
++std::string AttentionProfileLabel(const Entry&e,const std::vector<std::optional<mx::array>>&env){
++  if(!AttentionProfileEnabled()||e.ins.empty()||e.outs.size()!=1)return {};
++  const auto&x=env[e.ins[0]];if(!x||!(x->dtype()==mx::bfloat16||x->dtype()==mx::float32))return {};
++  bool take=false;
++  if(e.op==kDotGeneral){size_t p=0;auto l=e.attrs[p++];p+=l;auto r=e.attrs[p++];p+=r;take=e.attrs[p]>1;}
++  else take=((e.op>=kAbs&&e.op<=kClz)||e.op==kReduce||e.op==kConvert)&&x->ndim()==4&&x->size()>=65536&&(x->shape(1)==4||x->shape(1)==8);
++  if(!take)return {};
++  std::ostringstream label;label<<e.op;
++  for(int id:e.ins)if(env[id]){label<<"_";for(auto d:env[id]->shape())label<<d<<"x";label<<"d"<<static_cast<int>(env[id]->dtype().val());}
++  if(e.op==kReduce)label<<"_reduce"<<e.attrs[0];
++  auto text=label.str();const char*filter=std::getenv("FBC_ATTN_PROFILE_FILTER");
++  if(filter&&text.rfind(filter,0)!=0)return {};
++  return text;
++}
++}
+diff --git a/plugin-native/runtime/BUILD b/plugin-native/runtime/BUILD
+--- a/plugin-native/runtime/BUILD
++++ b/plugin-native/runtime/BUILD
+@@ -23,6 +23,7 @@
+ cc_library(
+     name = "runtime",
+     srcs = [
++        "attention_profile.cc",
+         "compile.cc",
+         "config.cc",
+         "control.cc",
+@@ -47,6 +48,7 @@
+         "runtime.cc",
+     ],
+     hdrs = [
++        "attention_profile.h",
+         "gdn.h",
+         "evo_attention.h",
+         "host_callback.h",
