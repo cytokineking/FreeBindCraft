@@ -1,0 +1,221 @@
+{
+  "recorded_utc": "2026-10-24T05:57:49.846865+00:00",
+  "publication_status": "published",
+  "reviewed_freebindcraft_commit": "2bfda31dc10e089ac26b1e71e1fbd99f3fed8817",
+  "backend_repository": "https://github.com/cytokineking/metaljax",
+  "backend_branch": "codex/freebindcraft-0.11.9-fbc3",
+  "backend_source_commit": "d5962d9ba7340f8b7b893f9332851d34da31b7d7",
+  "tag": "v0.11.9-fbc3",
+  "tag_object": "64be29d55e7813ecb76e4608dd8e403a133944d2",
+  "release_url": "https://github.com/cytokineking/metaljax/releases/tag/v0.11.9-fbc3",
+  "release_id": 422545611,
+  "published_at": "2026-10-24T05:53:23Z",
+  "artifact_bytes_rebuilt": false,
+  "public_assets": {
+    "LICENSE-MLX-MIT.txt": {
+      "url": "https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc3/LICENSE-MLX-MIT.txt",
+      "sha256": "ccfab7ccb2ea306f71531c8ca77bb55507606cd90768b1e32b8b52ab5b48cf01",
+      "bytes": 1066
+    },
+    "LICENSE-MetalJAX-Apache-2.0.txt": {
+      "url": "https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc3/LICENSE-MetalJAX-Apache-2.0.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "bytes": 11358
+    },
+    "SHA256SUMS": {
+      "url": "https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc3/SHA256SUMS",
+      "sha256": "930af4844c806785a7e50c8a22c43793b4fd26f0c856702d61337319e92eaca5",
+      "bytes": 681
+    },
+    "THIRD_PARTY_NOTICES.txt": {
+      "url": "https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc3/THIRD_PARTY_NOTICES.txt",
+      "sha256": "685b4baf080f3581aa54e08515083a9a094732b942a7dc54ec5c7025e0a9ee6f",
+      "bytes": 1605
+    },
+    "build-provenance.json": {
+      "url": "https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc3/build-provenance.json",
+      "sha256": "96d4cbc67f01fb3e294281a4501ee4588e38225481d7e7882b719ddf69608a6f",
+      "bytes": 3742
+    },
+    "metaljax-0.11.9+fbc3-py3-none-macosx_14_0_arm64.whl": {
+      "url": "https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc3/metaljax-0.11.9+fbc3-py3-none-macosx_14_0_arm64.whl",
+      "sha256": "0fa13c5def15e89024c624b81f5537492d269c6cb209602a5ba1e00baf25faa2",
+      "bytes": 68194288
+    },
+    "metaljax-0.11.9-fbc3-source.tar.gz": {
+      "url": "https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc3/metaljax-0.11.9-fbc3-source.tar.gz",
+      "sha256": "e1c23cdd75dfd36b1736d7e6883d3a251a78994f5902c0f4af002063c9a7915a",
+      "bytes": 2065895
+    },
+    "metaljax-fbc3-local-source.bundle": {
+      "url": "https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc3/metaljax-fbc3-local-source.bundle",
+      "sha256": "6e9c0064f0c25a7146832506c5529f213005b23695d2d300292e7327b1053698",
+      "bytes": 3985819
+    }
+  },
+  "remote_refs": "d5962d9ba7340f8b7b893f9332851d34da31b7d7\trefs/heads/codex/freebindcraft-0.11.9-fbc3\n64be29d55e7813ecb76e4608dd8e403a133944d2\trefs/tags/v0.11.9-fbc3\nd5962d9ba7340f8b7b893f9332851d34da31b7d7\trefs/tags/v0.11.9-fbc3^{}\n",
+  "fresh_remote_source_files_verified": 346,
+  "installation": {
+    "started_utc": "2026-10-24T05:53:59.465083+00:00",
+    "completed_utc": "2026-10-24T05:54:29.534151+00:00",
+    "ordinary_default_installer": true,
+    "initial_wheel_cache_empty": true,
+    "initial_uv_cache_empty": true,
+    "local_wheel_override": false,
+    "public_url_download_observed": true,
+    "matches_reviewed_environment": true,
+    "native_model_assets": "Existing read-only assets will be reused for smoke checks; this run installs fresh Python dependencies."
+  },
+  "installed_native_files": {
+    "metaljax/lib/libmetal_pjrt_native.dylib": "25230c9a0a5b342c6a14313a06db0844f0e9cf3ce562ac5b8543a3edfd5449e4",
+    "metaljax/lib/mlx/lib/libmlx_metaljax.dylib": "72dc8d9a4b1e07df2f6bc91383e0567acf3ce292398ae6ce4ed1d19fce0b1374"
+  },
+  "installed_versions": {
+    "metaljax": "0.11.9+fbc3",
+    "jax": "0.11.2",
+    "jaxlib": "0.11.2",
+    "numpy": "2.5.4",
+    "colabdesign": "1.1.3",
+    "openmm": "8.6.1"
+  },
+  "tests": {
+    "result": "89 passed, 2 warnings in 58.85s",
+    "environment": {
+      "JAX_PLATFORMS": "metal,cpu",
+      "JAX_DISABLE_JIT": "0",
+      "JAX_ENABLE_COMPILATION_CACHE": "false"
+    },
+    "guard": {
+      "returncode": 0,
+      "reason": null,
+      "elapsed_seconds": 60.778106458019465
+    },
+    "peak_swap_growth_bytes": 0,
+    "pressure_samples": {
+      "1": 106
+    }
+  },
+  "cli_backend": {
+    "default": {
+      "before_backend": {
+        "METALJAX_EVO_ATTN": null,
+        "METALJAX_SLICE_BEFORE_CONVERT": null
+      },
+      "slice_admission": [
+        [
+          158,
+          158,
+          158
+        ],
+        [
+          153,
+          153,
+          153
+        ]
+      ],
+      "nonzero_attention_admission": [
+        [
+          8,
+          0
+        ],
+        [
+          16,
+          7
+        ]
+      ],
+      "exact_numeric_fields": 24,
+      "guard": {
+        "returncode": 0,
+        "reason": null,
+        "elapsed_seconds": 18.751068208017386
+      },
+      "peak_swap_growth_bytes": 0,
+      "pressure_samples": {
+        "1": 57
+      }
+    },
+    "cli-opt-out": {
+      "before_backend": {
+        "METALJAX_EVO_ATTN": "0",
+        "METALJAX_SLICE_BEFORE_CONVERT": null
+      },
+      "slice_admission": [
+        [
+          158,
+          158,
+          158
+        ],
+        [
+          153,
+          153,
+          153
+        ]
+      ],
+      "nonzero_attention_admission": [],
+      "exact_numeric_fields": 24,
+      "guard": {
+        "returncode": 0,
+        "reason": null,
+        "elapsed_seconds": 17.64023154100869
+      },
+      "peak_swap_growth_bytes": 0,
+      "pressure_samples": {
+        "1": 56
+      }
+    }
+  },
+  "retained_attempts": [
+    {
+      "reason": "Public download was first attempted while release remained draft; HTTP 404 before package sync.",
+      "disposition": "Retained failed log and empty environment/cache; repeated from a fresh environment and empty caches after publication was confirmed."
+    }
+  ],
+  "historical_provenance": "Original candidate source.json, build-manifest.json, validation.json, report and artifact bytes remain unchanged; their prepublication status is historical.",
+  "raw_evidence_root": "runs/metaljax-fbc3-publication-20261023",
+  "raw_evidence_sha256": {
+    "cli-backend/cli-opt-out/.local/matplotlib/fontlist-v3.11.0.json": "d0820856e5697811774dcac66b56b5307c9ea81d7217150b74400e7854b8a6f7",
+    "cli-backend/cli-opt-out/before-backend.json": "a0a1cc6271bddef8297a40d6b7bf2bbdd9054315b3344b4644de9d8b26d98391",
+    "cli-backend/cli-opt-out/bindcraft.py": "9035ffb466bd7cb5d17475caa3c65eb6872cd122fe998f4b1baeda754904dec5",
+    "cli-backend/cli-opt-out/guard/command.json": "a262b4a3e8177f53fc82a60bebd266ae63d45b71988a21989c955695253d9bf5",
+    "cli-backend/cli-opt-out/guard/job.log": "ac3d85bef1bd2f8a069a12897a44d73bd3e2f1221bb7936dc9b464cd2d569ba9",
+    "cli-backend/cli-opt-out/guard/result.json": "d39e9ac59b9985d121c7b8a26bfb4b38412c88ed7ffc9e565c6a86faa4dc3b55",
+    "cli-backend/cli-opt-out/memory/job.log": "f7220205372fd3bc1d77772de0283ebd7f115ebb4d1d3eb7829e9ebe7928b3cc",
+    "cli-backend/cli-opt-out/memory/latest.json": "c39a97bf3fe0a8680f21c8d2a8a9f2518d02c42fc6c9b40a717fcb6098bcabd6",
+    "cli-backend/cli-opt-out/memory/metadata.json": "885a70fb27098abcdb577ed1118595af1a29881f0c9ce133e1bca1094bb54798",
+    "cli-backend/cli-opt-out/memory/summary.json": "ac3d85bef1bd2f8a069a12897a44d73bd3e2f1221bb7936dc9b464cd2d569ba9",
+    "cli-backend/cli-opt-out/probe-previous.npz": "bc63e01c3392ff909bd0e66fe0755b4e0fbb7f49ff45208a3b5060afd0bec3da",
+    "cli-backend/cli-opt-out/probe-warm-forward.npz": "d6de0d4e6adb78b41db44115c3fb35c70ce7f4f75ab9c2ed5363f0e5df96ee6c",
+    "cli-backend/cli-opt-out/probe.json": "172a1bc2d382cebad9555b4408435757a4387a78ee5adb7f87e0a7ac6a83eea0",
+    "cli-backend/cli-opt-out/probe.npz": "de71d06e2a976beca9369e9e32f58a93c9e345c6dd451f0b80abf33ad7fb8b0a",
+    "cli-backend/cli-opt-out/run_apple_silicon.sh": "7c4edb2baa2ae48ec988bed124e0200acb26bd312c5ca18ec403cfde35272373",
+    "cli-backend/default/.local/matplotlib/fontlist-v3.11.0.json": "625061b3ebf6fdc2844bb2fc7ffae9fa69b59ae1fcb9c7c1985d59e1039e51ef",
+    "cli-backend/default/before-backend.json": "695932d62fb2807d1cf2742dadc2cefb989b152b8528803388750bd7a817c22e",
+    "cli-backend/default/bindcraft.py": "9035ffb466bd7cb5d17475caa3c65eb6872cd122fe998f4b1baeda754904dec5",
+    "cli-backend/default/guard/command.json": "e9ac8fbfff661224f0981d7e74e8042ea302e33c909a591393d43926674e38ea",
+    "cli-backend/default/guard/job.log": "6d2c81256f37a7a09ec21036c8e4887e15adad7ad1bb62b3396ce94ce938d6e0",
+    "cli-backend/default/guard/result.json": "5f44c65c433c5c0318bed03e45130ceefadcebc3b300b9e8e3c45117203563ef",
+    "cli-backend/default/memory/job.log": "978c967b73c33b31f0418e3992825f168165831dc4141aaf30d5af5e59e5b3cb",
+    "cli-backend/default/memory/latest.json": "8004336522100beda80c74133dac3e2b35606b2bd2cd5a11f3a744a163993b62",
+    "cli-backend/default/memory/metadata.json": "2e3cac2b097dbf9e3de9762b765037266549eb36f6e4e9f177fc05a29269ae55",
+    "cli-backend/default/memory/summary.json": "6d2c81256f37a7a09ec21036c8e4887e15adad7ad1bb62b3396ce94ce938d6e0",
+    "cli-backend/default/probe-previous.npz": "bc63e01c3392ff909bd0e66fe0755b4e0fbb7f49ff45208a3b5060afd0bec3da",
+    "cli-backend/default/probe-warm-forward.npz": "d6de0d4e6adb78b41db44115c3fb35c70ce7f4f75ab9c2ed5363f0e5df96ee6c",
+    "cli-backend/default/probe.json": "131f87a33409e24fa424223f405ba75ce414a41dda9b21007016f57af383cd97",
+    "cli-backend/default/probe.npz": "de71d06e2a976beca9369e9e32f58a93c9e345c6dd451f0b80abf33ad7fb8b0a",
+    "cli-backend/default/run_apple_silicon.sh": "7c4edb2baa2ae48ec988bed124e0200acb26bd312c5ca18ec403cfde35272373",
+    "cli-backend/summary.json": "5c5caba4799774e04d9cfbc04cc6fa39f4513b420460849d54d0c993787c232f",
+    "failed-prepublication-install/public-install.log": "f43705b2f5c01459d5b2267eeccc9dbdefb6026181937c6f629e44d34751ce88",
+    "failed-prepublication-install/reason.json": "99bd84b984e14db98b85fababccccad99d3e05e8c6d03029a1a6b5644dfd2022",
+    "install_public.py": "e40f5a5407982c558afa95365dbf5ba0694143876f57e8bec68b727b6472ab4f",
+    "public-install.json": "28420d6715291420ecb929c7a9001c9bc296be75b89043c86128562aa679f2c8",
+    "public-install.log": "7f2ac7d9dfcb297448f05361ec60556f75d5cf4680d5bb47c1fd295fe22e5152",
+    "published-release.json": "69817846e5dd597216389a890d70b4252ad2882d6f43198d3ddcc8b1408e5b85",
+    "record_publication.py": "e776265937fecd5ca16048e54141d18868aac1916719b625acfb0ad7cccb36bc",
+    "run_public_cli_probes.py": "65940248843651808b007a5e178ebc232016a4bf2e25c391946852f3387c1e4d",
+    "run_public_tests.py": "db0817f1607f021f233b97d6cbcfa7b153d5b3c4dca072559feb1b0bc78341d0",
+    "tests-guard/command.json": "b8521e388463bef9ff7b0cc2c898739d5da814bb3883b86e9aeaaae5e176b7cc",
+    "tests-guard/result.json": "261cd51bedf851f42a4476373d67fe2151692dbbdb2e3481813b9b78b354db45",
+    "tests-memory/job.log": "cc0965c9ee50646a96c8a83f9ad914931769694a350fa2ffa638c1524383f45b",
+    "tests-memory/summary.json": "eed115917c2eabddbcc0118d942fdb6841b91563068710a2f0ad823234c63556"
+  }
+}

@@ -1,11 +1,15 @@
 # Apple Silicon (experimental)
 
 FreeBindCraft runs natively on Apple Silicon using
-[FreeBindCraft's frozen MetalJAX build](https://github.com/cytokineking/metaljax/releases/tag/v0.11.9-fbc1) for AlphaFold design and
+[FreeBindCraft's frozen MetalJAX build](installation/metaljax/README.md) for AlphaFold design and
 ProteinMPNN on the Apple GPU. Relaxation uses native PyRosetta on the CPU by
 default, or OpenMM on the GPU through OpenCL with `--no-pyrosetta`.
 
 ## Installation
+
+The default is the published, checksum-pinned `0.11.9+fbc3` release. See the
+[installation guide and release verification](installation/metaljax/README.md)
+for its exact source, artifacts and public-download checks.
 
 Use native arm64 macOS with Apple Command Line Tools installed. If needed, run
 `xcode-select --install` and complete Apple's installer. From the repository:
@@ -26,7 +30,7 @@ Dependencies install inside the checkout under `.venv-metaljax`, `.local`, and
 installation command to add PyRosetta later. FFmpeg is needed only for saving
 animations; the supplied small examples disable them.
 
-The default installs the prebuilt `metaljax==0.11.9+fbc1` arm64 macOS wheel.
+The default selects the prebuilt `metaljax==0.11.9+fbc3` arm64 macOS wheel.
 Its versioned release URL and SHA-256 are pinned, together with JAX/jaxlib
 `0.11.2`. There is no user source-build step or automatic upstream upgrade.
 The installer reports the selected backend and installed versions.
@@ -43,8 +47,27 @@ switching modes explicitly replaces it. This is an installation choice, not a
 runtime fallback. A download/checksum failure stops installation before Python
 packages change. An explicit `FREEBINDCRAFT_METALJAX_WHEEL=/absolute/path.whl`
 developer override takes precedence over both modes; unset it to return to the
-published build. Local overrides are user-selected artifacts, outside the
-published-wheel checksum guarantee.
+frozen build. Local overrides are user-selected artifacts, outside the
+frozen-wheel checksum guarantee.
+
+The fbc3 release enables slice-before-BF16-conversion when
+`METALJAX_SLICE_BEFORE_CONVERT` is unset; set it to `0` for diagnostic opt-out.
+Attention epilogues also default on; unsupported shapes use the existing
+lowering. To opt out, add the Apple launcher flag:
+
+```bash
+./run_apple_silicon.sh --no-attention-epilogues \
+  --settings settings_target/ubiquitin_apple_small.json \
+  --advanced settings_advanced/apple_silicon_ubiquitin_small.json \
+  --max-attempts 1 --seed 42 --no-plots --no-animations
+```
+
+The flag sets `METALJAX_EVO_ATTN=0` before Python starts and overrides an
+inherited `=1`. An explicit environment `=0` is also preserved. Scientific
+settings, precision, scheduling and the memory governor are unchanged. The
+[production report](installation/metaljax/production/fbc3/README.md) records the
+exact artifact's prepublication checks; earlier opt-in attention measurements
+remain historical.
 
 ## Run a small example
 
@@ -83,7 +106,7 @@ It uses a 65-residue binder and writes to `runs/pdl1-apple-example/output`.
 
 ## Tested configuration and performance
 
-The pinned runtime uses Python 3.12, JAX/jaxlib 0.11.2, metaljax 0.11.9+fbc1, and
+The runtime uses Python 3.12, JAX/jaxlib 0.11.2, metaljax 0.11.9+fbc3, and
 OpenMM 8.6.1. Exact dependencies are recorded in the
 [Apple Silicon requirements](installation/apple-silicon-requirements.txt) and
 [PyRosetta requirements](installation/pyrosetta-apple-requirements.txt).
@@ -120,16 +143,22 @@ measured Rosetta scores, as in FreeBindCraft's Linux bypass mode.
 The default build fixes nested AlphaFold loops that otherwise silently retire
 their compiled variants. It keeps the existing calculation, precision,
 recycling, checkpointing and optimization behavior, and uses unchanged private
-MLX runtime binaries. The reviewed 146-residue fixture's warmed gradients were
-1.71× faster and its full design stage 1.73× faster on the M5 Max. Full-workflow
+MLX runtime binaries. In the original fbc1 validation, the 146-residue fixture's
+warmed gradients were 1.71× faster and its full design stage 1.73× faster on the M5 Max. Full-workflow
 peak physical footprint increased from 5.49 to 8.85 GiB.
+
+The fbc3 release adds the attention and slice defaults described above. Against
+public fbc1, its fixed-work M5 Max comparison measured 17.4% less design time,
+13.9% less complete-harness time, and peak process footprint of 7.90 GiB.
+These small-sample results are not accepted-design throughput; see the
+[validation report](installation/metaljax/production/fbc3/README.md).
 
 Existing per-loop recovery and memory safeguards remain enabled. A memory
 governor refusal propagates as an error; it does not guarantee eager recovery,
 swap dependencies or restart a design. Its budget is checked at admission and
-sampling points, and is not a strict peak-memory cap: the bounded PDL1 test
+sampling points, and is not a strict peak-memory cap: the original fbc1 PDL1 test
 reached 9.78 GiB transiently under a 4 GiB policy before reclaiming memory.
-The normal PDL1 forward/gradient probe used 10.43 GiB versus 5.14 GiB on stock.
+The original fbc1 PDL1 forward/gradient probe used 10.43 GiB versus 5.14 GiB on stock.
 Use the explicit stock installation choice above when investigating
 memory/performance differences.
 

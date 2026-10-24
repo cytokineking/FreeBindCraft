@@ -63,6 +63,10 @@ def main():
     parser.add_argument('--name', required=True)
     parser.add_argument('--dump-hlo', action='store_true')
     parser.add_argument('--profile', action='store_true', help='Enable runtime profiling fences only in warmed calls')
+    parser.add_argument('--no-dispatch-stats', action='store_true',
+                        help='Normal execution timings without private runtime counter reads')
+    parser.add_argument('--diagnostic-arrays', action='store_true',
+                        help='Save every warmed result for counter diagnosis; excludes performance use')
     parser.add_argument('--pdb', type=Path, help='Target PDB; defaults to the bundled ubiquitin fixture')
     parser.add_argument('--chain', default='A')
     parser.add_argument('--binder-length', type=int, default=70)
@@ -135,7 +139,7 @@ def main():
     first = settle(call(model._model['grad_fn']))
     first_grad_seconds = time.perf_counter()-t
     times = []
-    read_dispatch = dispatch_reader()
+    read_dispatch = (lambda: {}) if args.no_dispatch_stats else dispatch_reader()
     gradient_dispatch, forward_dispatch = [], []
     for i in range(args.repeats):
         if args.profile: os.environ['FBC_PROFILE_ACTIVE']=f'gradient-{i}'
@@ -145,6 +149,10 @@ def main():
         times.append(time.perf_counter()-t)
         after = read_dispatch()
         gradient_dispatch.append({k: after[k]-before[k] for k in before})
+        if args.diagnostic_arrays:
+            leaves = jax.tree_util.tree_leaves(((loss, aux), grad))
+            np.savez(args.out/f'{args.name}-gradient-call-{i}.npz',
+                     **{f'leaf_{n}': v for n, v in enumerate(leaves)})
     forward_times=[]
     for i in range(args.repeats):
         if args.profile: os.environ['FBC_PROFILE_ACTIVE']=f'forward-{i}'
@@ -154,6 +162,10 @@ def main():
         forward_times.append(time.perf_counter()-t)
         after = read_dispatch()
         forward_dispatch.append({k: after[k]-before[k] for k in before})
+        if args.diagnostic_arrays:
+            leaves = jax.tree_util.tree_leaves((warm_loss, warm))
+            np.savez(args.out/f'{args.name}-forward-call-{i}.npz',
+                     **{f'leaf_{n}': v for n, v in enumerate(leaves)})
     os.environ['FBC_PROFILE_ACTIVE']='0'
     np.savez(args.out/f'{args.name}-warm-forward.npz',loss=warm_loss,xyz=warm['atom_positions'],plddt=warm['plddt'])
     assert np.isfinite(loss) and np.isfinite(grad['seq']).all()
@@ -180,7 +192,13 @@ def main():
         **read_footprint(os.getpid()),
         forward_seconds=forward_times, median_forward_seconds=float(np.median(forward_times)),
         gradient_dispatch=gradient_dispatch, forward_dispatch=forward_dispatch,
-        attention=os.environ.get('METALJAX_EVO_ATTN','0'), profiling=args.profile,
+        attention=os.environ.get('METALJAX_EVO_ATTN','unset'), profiling=args.profile,
+        dispatch_stats_enabled=not args.no_dispatch_stats,
+        diagnostic_arrays=args.diagnostic_arrays,
+        slice_before_convert=os.environ.get('METALJAX_SLICE_BEFORE_CONVERT','unset'),
+        backend_environment={k:os.environ.get(k) for k in ['METALJAX_SLICE_BEFORE_CONVERT',
+            'METALJAX_EVO_ATTN','METALJAX_MATMUL_PRECISION','METALJAX_MEM_BUDGET_MB',
+            'MLX_MAX_OPS_PER_BUFFER','MLX_MAX_MB_PER_BUFFER','METALJAX_LOOP_INFLIGHT_MB']},
         persistent_jax_cache=False,
         plugin_sha256=hashlib.sha256(Path(importlib.metadata.distribution('metaljax').locate_file('metaljax/lib/libmetal_pjrt_native.dylib')).read_bytes()).hexdigest(),
         scope='Fixed-input AF2 forward and last-recycle VJP, not a trajectory or quality benchmark')
