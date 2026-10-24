@@ -9,10 +9,11 @@ unchanged.
 Admission requires static, positive, unencoded ranked shapes; a direct, shape-preserving
 FP32 to BF16 conversion; proven row-contiguous source layout; and exclusively reducing
 slice uses or proven slice-helper calls in the conversion's own block. Their aggregate
-element count must be strictly smaller than the original conversion, using overflow-safe
-arithmetic. Both static and dynamic slices require a row-contiguous window; static
-strides must be one. Dynamic slices retain their original indices, sizes and clamp
-lowering. There is no hard-coded layer count, sequence length or model name.
+logical access cost must be strictly lower than the original conversion and slices,
+using checked arithmetic as derived below. Both static and dynamic slices require a
+row-contiguous window; static strides must be one. Dynamic slices retain their original
+indices, sizes and clamp lowering. There is no hard-coded layer count, sequence length
+or model name.
 
 The source-layout proof starts at the frozen PJRT boundary: host inputs are gathered
 into dense row-major arrays, and execution materializes non-row outputs before
@@ -68,15 +69,15 @@ caches are invalid build inputs.
   --source-dir .local/src/metaljax-baseline \
   --cache-dir .local/baseline-build --jobs 6 --install
 
-.venv-metaljax-slice/bin/python installation/build_metaljax_attention.py \
-  --python .venv-metaljax-slice/bin/python \
-  --source-dir .local/src/metaljax-slice \
+.venv-metaljax-slice-v5/bin/python installation/build_metaljax_attention.py \
+  --python .venv-metaljax-slice-v5/bin/python \
+  --source-dir .local/src/metaljax-slice-v5 \
   --cache-dir .local/baseline-build --jobs 6 --slice-before-convert --install
 ```
 
 The candidate applies the reviewed attention patch followed by
 `0001-slice-before-convert.patch` to MetalJAX
-`678c58eaaafc33c5b31bcc6b6d0176dd078f6063`. It builds `0.11.9+fbc4slicedev4`; the
+`678c58eaaafc33c5b31bcc6b6d0176dd078f6063`. It builds `0.11.9+fbc4slicedev5`; the
 control builds `0.11.9+fbc3attndev2`. Both use JAX/jaxlib 0.11.2, the checksummed frozen
 MLX SDK, XLA revision `91888df6ce85102c30220e41d952065925e10886`, Bazel 8.7.0 and
 hatchling 1.32.4. Each source directory contains its own `build-tools/attention-wheels/`
@@ -88,14 +89,14 @@ Run tests behind the shared-Mac guard after builds have finished:
 ```bash
 .venv-metaljax-baseline/bin/python extras/guard_metaljax_job.py \
   --enabled --out runs/slice-tests -- \
-  .venv-metaljax-slice/bin/python -m pytest -q \
-  .local/src/metaljax-slice/tests/test_slice_before_convert.py \
-  .local/src/metaljax-slice/tests/test_evo_attention.py \
-  .local/src/metaljax-slice/tests/test_nested_counted.py \
-  .local/src/metaljax-slice/tests/test_control.py \
-  .local/src/metaljax-slice/tests/test_msl_scan.py \
-  .local/src/metaljax-slice/tests/test_command_buffer.py \
-  .local/src/metaljax-slice/tests/test_donation.py tests
+  .venv-metaljax-slice-v5/bin/python -m pytest -q \
+  .local/src/metaljax-slice-v5/tests/test_slice_before_convert.py \
+  .local/src/metaljax-slice-v5/tests/test_evo_attention.py \
+  .local/src/metaljax-slice-v5/tests/test_nested_counted.py \
+  .local/src/metaljax-slice-v5/tests/test_control.py \
+  .local/src/metaljax-slice-v5/tests/test_msl_scan.py \
+  .local/src/metaljax-slice-v5/tests/test_command_buffer.py \
+  .local/src/metaljax-slice-v5/tests/test_donation.py tests
 ```
 
 `extras/run_metaljax_slice_comparison.py` runs sequential fresh processes in ABBA order,
@@ -107,20 +108,12 @@ warmed-forward fields and three previous-state fields must match byte for byte. 
 runs disable private dispatch reads and all hooks. First calls and warmed calls are
 reported separately; repeated calls within a process are correlated.
 
-`extras/run_metaljax_slice_trajectories.py` takes the preserved handoff with
-`--evidence`, read-only model/native-tool assets with `--assets`, and a fresh `--out`.
-It verifies the unchanged fixed-work harness SHA-256
-`e73d95f8c09f4e5dec907ac68fd2240e2220242873250e7c07eb93cf3462075a`, creates isolated
-source snapshots and runs two processes per arm. It compares actual generated trajectory
-PDBs before considering downstream shared-fixture results. This harness reports fixed
-work, including rejected designs, rather than accepted-design throughput. Native tools
-and model assets are reused read-only; run outputs and caches belong to each snapshot.
-
-If a guard interrupts a process, preserve its incomplete snapshot outside the series
-directory, then use `--resume`. The runner verifies the completed prefix against its
-environment, source/config/harness, guard, design records/PDB and report receipts; it
-refuses to reuse an incomplete snapshot. Every restarted process begins with fresh
-source outputs and caches.
+The normal comparison also accepts `--attention 0` to apply the same disabled attention
+setting to both arms. Select the new environment explicitly with `--candidate-python
+.venv-metaljax-slice-v5/bin/python` and its v5 build manifest. The [v4 report at the
+reviewed
+commit](https://github.com/cytokineking/FreeBindCraft/blob/8c789beb8c3236281e2f62e21ad467d863a6aabf/installation/metaljax/slice-before-convert/README.md)
+retains the original fixed-work trajectory recipe and receipts.
 
 ## Diagnostic boundaries
 
@@ -168,7 +161,136 @@ cannot establish per-process exclusivity, and desktop activity and thermal state
 uncontrolled. Memory reports distinguish process RSS/physical footprint from sampled
 system pressure and swap; they do not isolate GPU allocations.
 
-## Normal fixed-input measurements
+## Profitability follow-up: v5
+
+Independent review found that the v4 element-count test admitted a near-full
+runtime-index window despite the extra FP32 temporary. On the reviewed v4 wheel,
+selecting 15 of 16 blocks was 35.7% slower in a fresh ABBA synthetic comparison, with
+all bits equal. This was an operation regression, not an AF2 regression. The corrected
+v5 source preserves all earlier layout, clamping, rounding, use-census,
+rematerialization, gradient, donation and governor gates.
+
+The frozen runtime's `kConvert` emits `mx::astype`; `kSlice` emits a static `mx::slice`
+view; ordinary `kDynamicSlice` emits a materializing dynamic slice. For N full elements,
+T the sum of every static window and D the sum of every dynamic window, the approximate
+logical byte costs are:
+
+- Before: `6N + 4D` (FP32 read/BF16 write plus BF16 dynamic copies).
+- After: `6T + 14D` (static-window conversions plus FP32 dynamic copies and conversions).
+- Strict savings: `3T + 5D < 3N`.
+
+The same budget covers direct, helper and mixed uses together before any IR mutation. It
+reserves strictly positive savings and divides before multiplying to check each spend.
+Unrepresentable full budgets and aggregate costs decline. Build-time assertions exercise
+the actual budget arithmetic at int64 limits without huge device allocations. Position
+specialization can remove a dynamic copy, but admission conservatively charges for it.
+These are logical accesses; they do not measure physical DRAM traffic or guarantee
+hardware timing.
+
+The v5 wheel and source were built in separate directories and environment. The v4
+wheel, manifests, source and all 865 raw observations remain unchanged. A fresh patch
+application reproduces every v5 source fingerprint. The 84-test backend/repository suite
+passes, including added near-full rejection, small windows, strict equality and adjacent
+boundaries, fanout, static versus dynamic, and mixed/helper admission cases. Both
+admission and raw output bytes are checked; all existing conversion-edge, layout,
+gradient and lifetime tests still pass.
+
+Candidate v5 plugin SHA-256:
+`fe556d0bba093ffe82cc53d0cce2b91b63c901ce4a7b6c59d144ea9dc78830ef`. Wheel SHA-256:
+`01e6d7231fe41aa0bae2a8a5b6417053ce840d7164db9277c985cc0ff9713d34`.
+
+### Fresh synthetic reproduction
+
+The review fixture uses `(16,1024,1024)`, alternating runtime indices, three warmups and
+twenty synchronized calls per fresh process. Both arms use the same v5 binary with the
+rewrite off/on, attention disabled and original scheduling. Optimized HLO verifies that
+the 15-block case now declines and the one-block case still rewrites. Every saved BF16
+bit matches across arms. The first block's one-block control timings varied, so the full
+ABBA block was repeated; every completed original observation remains included.
+
+| Window | Block | Process medians, rewrite off → on (ms) | Change |
+| --- | --- | ---: | ---: |
+| 15 / 16 blocks | Initial ABBA | 0.9930 → 0.9659 | -2.7% |
+| 15 / 16 blocks | Repeat ABBA | 0.8338 → 0.9705 | +16.4% |
+| 15 / 16 blocks | All valid processes | 0.9023 → 0.9659 | +7.1% |
+| 1 / 16 blocks | Initial ABBA | 0.6164 → 0.2622 | -57.5% |
+| 1 / 16 blocks | Repeat ABBA | 0.6835 → 0.2657 | -61.1% |
+| 1 / 16 blocks | All valid processes | 0.6835 → 0.2638 | -61.4% |
+| 15 / 16 blocks, isolated | BAAB | 0.9496 → 0.9733 | +2.5% |
+
+The unfavorable window has identical optimized HLO across arms in every block, with the
+extra FP32 slice temporary absent. The mixed-window repeat still varied in elapsed time
+despite that identical fallback, so the 15-block case was isolated before
+positive-control work in an opposite-order BAAB block. Its off/on process ranges overlap
+(off 0.856–1.043 ms; on 0.890–1.057 ms), with a +2.5% difference in process medians. The
+small-window positive control remains eligible and faster in every candidate process.
+
+The extra-copy regression is removed structurally, and isolation does not reproduce the
+reviewed 35.7% penalty. These small shared-Mac samples do not establish exact zero
+overhead or identify the cause of the remaining timing variation. Every block is
+retained. Absolute times from different sessions are not directly comparable, and this
+synthetic probe does not estimate AF2 throughput.
+
+```bash
+.venv-metaljax-baseline/bin/python extras/benchmark_metaljax_slice_profitability.py \
+  --python .venv-metaljax-slice-v5/bin/python --out runs/profitability-check
+```
+
+### Fresh AF2 checks with v5
+
+A is the preserved frozen attention-development control, B the v5 candidate. Every block
+uses fresh ABBA processes, two per arm, six warmed calls per process, with identical
+precision, governor, scheduling and scientific settings. The attention setting is the
+same within each block. Values are medians of process medians; within-process calls
+correlate. First-call and memory data are retained separately in the receipt.
+
+| Attention | Residues | Warm gradient seconds A → B | Warm forward seconds A → B | Gradient / forward time change |
+| --- | ---: | ---: | ---: | ---: |
+| Enabled | 146 | 1.116 → 1.042 | 0.343 → 0.293 | -6.7% / -14.4% |
+| Enabled | 185 | 1.745 → 1.696 | 0.500 → 0.439 | -2.8% / -12.1% |
+| Enabled | 169 | 1.460 → 1.404 | 0.424 → 0.369 | -3.8% / -12.9% |
+| Disabled | 146 | 1.226 → 1.168 | 0.395 → 0.341 | -4.7% / -13.7% |
+| Disabled | 185 | 1.991 → 1.948 | 0.587 → 0.536 | -2.2% / -8.8% |
+| Disabled | 169 | 1.648 → 1.593 | 0.504 → 0.445 | -3.4% / -11.6% |
+
+One disabled 169-residue process was guard-stopped for background indexing. The
+completed A/B prefix was retained and the remaining B/A pair restarted in fresh
+processes; the interrupted process is excluded and all raw evidence retained.
+
+All 24 normal processes match the 18 model/gradient, three warmed-forward and three
+previous-state fields byte for byte. The enabled-attention cases match the preserved
+146/185/169 archives. The disabled 146 case also matches the independent review's saved
+control; disabled 185/169 cases share the first control reference and frozen previous
+state within their block. Every comparison uses exact bytes, without relaxed tolerances.
+
+Separate admission diagnostics verify 158 forward and 153 gradient conversions, with
+identical slice/helper counts, in all six size/attention combinations. The new cost gate
+is a strict subset of the v4 element gate: `3T+5D<3N` implies `T+D<N`. With the other
+admission constraints unchanged, these identical censuses preserve the intended AF2
+sites. The separately instrumented 146 case also matches v4 per-phase kernel-count work,
+reconciles direct/native counters exactly, and matches every full warmed call tree
+across arms. Diagnostic timing is excluded from normal performance data.
+
+Fresh representative AF2 behavior and benefits were retained, so no affected fixed-work
+trajectory comparison was identified for rerun. No v5 full-trajectory timing is claimed.
+The fixed-work trajectory numbers below remain explicitly historical v4 results. All
+samples are from one shared M5 Max with uncontrolled thermals and desktop activity;
+activity checks cannot prove GPU exclusivity.
+
+Exact v5 build identities, source fingerprints, all measurements, the rerun decision and
+raw evidence checksums are in `validation.json`. The preserved [v4
+receipt](https://github.com/cytokineking/FreeBindCraft/blob/8c789beb8c3236281e2f62e21ad467d863a6aabf/installation/metaljax/slice-before-convert/validation.json)
+remains tied to the reviewed v4 commit. The optimization is still disabled by default;
+this change does not publish a release or change installer pins.
+
+## Historical v4 measurements
+
+The following observations belong to `0.11.9+fbc4slicedev4` at reviewed commit
+`8c789beb8c3236281e2f62e21ad467d863a6aabf`. Throughout this historical section, “final”
+refers to v4.
+
+### Normal fixed-input measurements (v4)
+
 
 Measurements used a shared Apple M5 Max with 128 GiB of memory. Each initial block has
 two fresh processes per arm and six warmed calls per process. Values below are medians
@@ -204,8 +326,9 @@ by -10.1%. The maximum physical footprint across all 185-residue processes is 10
 9.88 GiB. The repeat does not establish why the original process was slower. Shared
 desktop activity and thermals remain uncontrolled; these small samples cannot establish
 a universal speedup. Physical footprint is a macOS process lifetime high-water mark,
-without isolating GPU allocations. Every individual timing and range is retained in
-`validation.json`.
+without isolating GPU allocations. Every individual timing and range is retained in [v4
+validation
+receipt](https://github.com/cytokineking/FreeBindCraft/blob/8c789beb8c3236281e2f62e21ad467d863a6aabf/installation/metaljax/slice-before-convert/validation.json).
 
 First calls include compilation and materialization:
 
@@ -244,7 +367,7 @@ matches byte for byte across arms. This validates the new samples. The two histo
 196-dispatch deficits remain causally unresolved because they lack per-call traces and
 arrays. No constant-count assumption or widened guard is used.
 
-## Fixed-work trajectories and remaining limits
+### Fixed-work trajectories and remaining limits (v4)
 
 The unchanged checksum-pinned harness runs the 75/45/5/15 schedule with the original
 scheduling control. The initial ABBA series spans a user-requested pause; the verified
@@ -301,6 +424,8 @@ census, layouts and lifetime contracts and establish an actual timing benefit. L
 remaining activation/layout copies need provenance and cost evidence. No speedup is
 forecast from bytes.
 
-`validation.json` records results, exact source/build identities, raw-evidence
-checksums, repetition policy and limitations. Local wheels, arrays, logs and process
-samples remain ignored under `.local/` and `runs/priority2/`.
+[v4 validation
+receipt](https://github.com/cytokineking/FreeBindCraft/blob/8c789beb8c3236281e2f62e21ad467d863a6aabf/installation/metaljax/slice-before-convert/validation.json)
+records results, exact source/build identities, raw-evidence checksums, repetition
+policy and limitations. Local wheels, arrays, logs and process samples remain ignored
+under `.local/` and `runs/priority2/`.

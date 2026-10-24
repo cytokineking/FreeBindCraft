@@ -1,6 +1,6 @@
 """Balanced fresh-process comparisons of the opt-in slice-before-convert build.
 
-Original 800-operation scheduling and attention are enabled for both arms.
+Original 800-operation scheduling and the same attention setting apply to both arms.
 Normal timings do not read dispatch counters or load diagnostic hooks.
 """
 import argparse
@@ -50,6 +50,8 @@ def main():
     parser.add_argument('--binder-length', type=int, default=70)
     parser.add_argument('--diagnostic-trace', type=Path, help='Separate diagnostic run, never normal timing evidence')
     parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--attention', choices=['0', '1'], default='1',
+                        help='Use the same attention setting in both arms')
     args = parser.parse_args()
     if (not args.order or set(args.order)-{'A', 'B'} or args.repeats < 1 or
         ((args.reference is None or args.previous is None) and args.order[0] != 'A')):
@@ -78,6 +80,7 @@ def main():
         counts[arm] += 1
         name = arm.lower()+str(counts[arm])
         python, env = pythons[arm], environment(arm == 'B')
+        env['METALJAX_EVO_ATTN'] = args.attention
         if args.debug:
             env['METALJAX_DEBUG'] = '1'
         probe = 'benchmark_metaljax_attention.py'

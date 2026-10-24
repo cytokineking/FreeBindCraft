@@ -120,7 +120,7 @@ def main():
     uv = shutil.which('uv') or str(root/'.local/bin/uv')
     env.update(METALJAX_NATIVE_DYLIB=str(plugin), METALJAX_VENDORED_MLX=str(sdk))
     base.run([uv, 'build', '--wheel', '--build-constraint', constraints, '--out-dir', output], cwd=source, env=env)
-    version = ('0.11.9+fbc4slicedev4' if args.slice_before_convert else
+    version = ('0.11.9+fbc4slicedev5' if args.slice_before_convert else
                '0.11.9+fbc3attnprofile2' if args.profile else '0.11.9+fbc3attndev2')
     wheel, = output.glob(f'metaljax-{version}-*.whl')
     manifest = dict(builder_sha256=base.sha(Path(__file__)), version=version, frozen_source_commit=current, frozen_release=release,

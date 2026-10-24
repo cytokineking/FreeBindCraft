@@ -14,13 +14,49 @@
  #include "mlir/IR/Region.h"
  #include "mlir/IR/Value.h"
  #include "mlx/mlx.h"
-@@ -10142,8 +10145,245 @@
+@@ -10142,8 +10145,284 @@
    return n;
  }
  
++// The frozen runtime emits astype for conversion, a view for static slice,
++// and a materializing slice for an ordinary runtime-index dynamic slice.
++// Let N be the full source, T the sum of static-window elements, and D the
++// sum of dynamic-window elements, counting EVERY admitted use. Logical bytes
++// before: 6N + 4D; after: 6T + 14D (8D FP32 slice + 6D conversion).
++// Strict savings therefore require 3T + 5D < 3N. This is an access-cost bound,
++// not a hardware timing promise. Position specialization can remove a dynamic
++// copy, but we deliberately do not depend on it when admitting a conversion.
++class SliceBeforeConvertBudget {
++ public:
++  constexpr explicit SliceBeforeConvertBudget(int64_t full)
++      : remaining_(full > 0 && full <= std::numeric_limits<int64_t>::max() / 3
++                       ? 3 * full : 0) {}
++  constexpr bool Spend(int64_t elements, bool materializes) {
++    const int64_t weight = materializes ? 5 : 3;
++    // Reserve strict positive savings, and check division BEFORE multiplying.
++    // An unrepresentable full budget or aggregate cost preserves old lowering.
++    if (remaining_ <= 0 || elements <= 0 || elements > (remaining_ - 1) / weight)
++      return false;
++    remaining_ -= elements * weight;
++    return true;
++  }
++ private:
++  int64_t remaining_;
++};
++
++// Exercise the same arithmetic at build time without allocating giant arrays.
++static_assert([] { SliceBeforeConvertBudget b(5); return b.Spend(2, true); }());
++static_assert([] { SliceBeforeConvertBudget b(5); return !b.Spend(3, true); }());
++static_assert([] { SliceBeforeConvertBudget b(10); return b.Spend(3, true) &&
++    b.Spend(4, false) && !b.Spend(1, false); }());
++static_assert([] { SliceBeforeConvertBudget b(std::numeric_limits<int64_t>::max());
++    return !b.Spend(1, false); }());
++static_assert([] { SliceBeforeConvertBudget b(std::numeric_limits<int64_t>::max() / 3);
++    return b.Spend(1, true) && !b.Spend(std::numeric_limits<int64_t>::max(), true); }());
++
 +// Commute only shape-preserving, elementwise f32 -> bf16 conversion with
 +// reducing, row-contiguous windows of proven row-contiguous sources. All uses
-+// must be admitted together and convert fewer elements than the original cast.
++// must be admitted together with strict aggregate logical access savings.
 +// No buffers or values survive a call. The ordinary slice/convert handlers
 +// still define indexing, clamping, layout handling and BF16 rounding.
 +void SliceBeforeConvert(mlir::ModuleOp module) {
@@ -163,7 +199,7 @@
 +        cv.getResult().use_empty() || !row_source(cv.getOperand())) continue;
 +    std::vector<mlir::Operation*> users;
 +    std::vector<mlir::Operation*> calls;
-+    int64_t selected = 0;
++    SliceBeforeConvertBudget budget(full);
 +    bool eligible = true;
 +    for (mlir::OpOperand& use : cv.getResult().getUses()) {
 +      mlir::Operation* user = use.getOwner();
@@ -182,7 +218,7 @@
 +      auto out = mlir::dyn_cast<mlir::RankedTensorType>(selection->getResult(0).getType());
 +      const int64_t n = count(out);
 +      if (!n || out.getRank() != src.getRank() ||
-+          out.getElementType() != dst.getElementType() || n >= full - selected) {
++          out.getElementType() != dst.getElementType()) {
 +        eligible = false;
 +        break;
 +      }
@@ -208,7 +244,10 @@
 +        }
 +        if (!eligible) break;
 +      }
-+      selected += n;  // strictly < full, so no overflow
++      if (!budget.Spend(n, mlir::isa<mlir::stablehlo::DynamicSliceOp>(selection))) {
++        eligible = false;
++        break;
++      }
 +      users.push_back(user);
 +    }
 +    if (!eligible) continue;
@@ -262,7 +301,7 @@
      llvm::raw_string_ostream os(text);
 --- /dev/null
 +++ b/tests/test_slice_before_convert.py
-@@ -0,0 +1,270 @@
+@@ -0,0 +1,309 @@
 +"""Fresh-process differential and structural tests of the opt-in rewrite.
 +
 +Compare the same backend with the rewrite disabled/enabled, including raw BF16
@@ -368,7 +407,46 @@
 +                              allow_negative_indices=False)
 +        return b, lax.reduce(b, jnp.bfloat16(0), lax.add, (1,))
 +
++    cost_x = rng.normal(size=(10, 4)).astype(np.float32)
++    def window(a, i, rows):
++        return lax.dynamic_slice(a, (i, 0), (rows, 4), allow_negative_indices=False)
++
++    @jax.jit
++    def helper_three(a, i):
++        return window(a, i, 3)
++
++    @jax.jit
++    def helper_nine(a, i):
++        return window(a, i, 9)
++
++    def fanout(a, i, rows):
++        b = a.astype(jnp.bfloat16)
++        return window(b, i, rows), window(b, i + 1, rows)
++
++    def mixed(a, i, static_rows):
++        b = a.astype(jnp.bfloat16)
++        return b[:static_rows], helper_three(b, i)
++
++    def direct_and_helper(a, i):
++        b = a.astype(jnp.bfloat16)
++        return window(b, i, 3), helper_three(b, i + 1)
++
 +    cases = [
++        ('cost_near_full_dynamic', lambda a, i: window(a.astype(jnp.bfloat16), i, 9), cost_x, False),
++        ('cost_small_dynamic', lambda a, i: window(a.astype(jnp.bfloat16), i, 1), cost_x, True),
++        ('cost_below_boundary', lambda a, i: window(a.astype(jnp.bfloat16), i, 5), cost_x, True),
++        ('cost_exact_boundary', lambda a, i: window(a.astype(jnp.bfloat16), i, 6), cost_x, False),
++        ('cost_above_boundary', lambda a, i: window(a.astype(jnp.bfloat16), i, 7), cost_x, False),
++        ('cost_static_near_full', lambda a, i: a.astype(jnp.bfloat16)[:9], cost_x, True),
++        ('cost_fanout_small', lambda a, i: fanout(a, i, 2), cost_x, True),
++        ('cost_fanout_boundary', lambda a, i: fanout(a, i, 3), cost_x, False),
++        ('cost_fanout_large', lambda a, i: fanout(a, i, 4), cost_x, False),
++        ('cost_helper_near_full', lambda a, i: helper_nine(a.astype(jnp.bfloat16), i), cost_x, False),
++        ('cost_helper_small', lambda a, i: helper_three(a.astype(jnp.bfloat16), i), cost_x, True),
++        ('cost_direct_helper_boundary', direct_and_helper, cost_x, False),
++        ('cost_mixed_below', lambda a, i: mixed(a, i, 4), cost_x, True),
++        ('cost_mixed_boundary', lambda a, i: mixed(a, i, 5), cost_x, False),
++        ('cost_mixed_above', lambda a, i: mixed(a, i, 6), cost_x, False),
 +        ('dynamic', dynamic, x, True),
 +        ('row_bf16_reduce', row_bf16_reduce, layout_x, True),
 +        ('static_row_bf16_reduce', lambda a, i: (
@@ -539,7 +617,7 @@
  [project]
  name = "metaljax"
 -version = "0.11.9+fbc3attndev2"
-+version = "0.11.9+fbc4slicedev4"
++version = "0.11.9+fbc4slicedev5"
  description = "Experimental Metal backend for JAX on Apple silicon: a native PJRT plugin executing StableHLO on the GPU through a vendored MLX runtime"
  readme = "README.md"
  requires-python = ">=3.12"
@@ -550,5 +628,5 @@
  """
  
 -__version__ = "0.11.9+fbc3attndev2"
-+__version__ = "0.11.9+fbc4slicedev4"
++__version__ = "0.11.9+fbc4slicedev5"
  __all__ = ["__version__"]
