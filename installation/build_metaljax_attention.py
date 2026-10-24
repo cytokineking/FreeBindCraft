@@ -23,6 +23,8 @@ def main():
     parser.add_argument('--cache-dir', type=Path, default=root/'.local/attention-build')
     parser.add_argument('--jobs', type=int, default=12)
     parser.add_argument('--profile', action='store_true', help='Include diagnostic-only GPU fences')
+    parser.add_argument('--slice-before-convert', action='store_true',
+                        help='Build the opt-in FP32 slice-before-BF16-conversion experiment')
     parser.add_argument('--install', action='store_true')
     args = parser.parse_args()
     if (platform.system(), platform.machine()) != ('Darwin', 'arm64') or args.jobs < 1:
@@ -47,6 +49,10 @@ def main():
     if current != release['source_commit']:
         raise RuntimeError(f'Preserving unexpected source HEAD: {current}')
     patches = [root/'installation/metaljax/attention/0001-bf16-attention-epilogues.patch']
+    if args.slice_before_convert:
+        patches.append(root/'installation/metaljax/slice-before-convert/0001-slice-before-convert.patch')
+    if args.profile and args.slice_before_convert:
+        parser.error('Keep slice diagnostics separate from the attention fence build')
     if args.profile:
         patches.append(root/'installation/metaljax/attention/diagnostic-fences.patch')
     patch_hashes = {p.name: base.sha(p) for p in patches}
@@ -114,11 +120,13 @@ def main():
     uv = shutil.which('uv') or str(root/'.local/bin/uv')
     env.update(METALJAX_NATIVE_DYLIB=str(plugin), METALJAX_VENDORED_MLX=str(sdk))
     base.run([uv, 'build', '--wheel', '--build-constraint', constraints, '--out-dir', output], cwd=source, env=env)
-    version = '0.11.9+fbc3attnprofile2' if args.profile else '0.11.9+fbc3attndev2'
+    version = ('0.11.9+fbc4slicedev4' if args.slice_before_convert else
+               '0.11.9+fbc3attnprofile2' if args.profile else '0.11.9+fbc3attndev2')
     wheel, = output.glob(f'metaljax-{version}-*.whl')
     manifest = dict(builder_sha256=base.sha(Path(__file__)), version=version, frozen_source_commit=current, frozen_release=release,
                     patches=patch_hashes, modified_source=fingerprint(), diagnostic_profile=args.profile,
                     attention_enabled_by_default=False, build_flags=flags,
+                    slice_before_convert_enabled_by_default=False,
                     compiler=subprocess.check_output(['xcrun', 'clang++', '--version'], text=True).strip(),
                     python=subprocess.check_output([str(python), '--version'], text=True).strip(),
                     uv=subprocess.check_output([uv, '--version'], text=True).strip(),

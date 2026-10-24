@@ -13,6 +13,10 @@ The separate [attention epilogue experiment](attention/README.md) requires an
 explicit development build and opt-in flag. The release described here remains
 the default Apple dependency.
 
+The [slice-before-conversion experiment](slice-before-convert/README.md) builds
+on the enabled attention control, with a separate opt-in compiler transformation
+and balanced numerical/performance validation tools.
+
 ## Default installation and troubleshooting
 
 ```bash
