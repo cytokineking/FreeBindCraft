@@ -89,6 +89,8 @@ def main():
     parser.add_argument('--source-dir', type=Path)
     parser.add_argument('--cache-dir', type=Path, default=root/'.local/metaljax-build')
     parser.add_argument('--jobs', type=int, default=12)
+    parser.add_argument('--batch', action='store_true',
+                        help='Keep Bazel in the foreground for bounded process-tree monitoring')
     parser.add_argument('--install', action='store_true', help='Install into --python only')
     args = parser.parse_args()
     release = json.loads(args.release_manifest.read_text())
@@ -132,7 +134,8 @@ def main():
     flags = ['--repositories_without_autoloads=cc_compatibility_proxy', '--macos_minimum_os=14.0',
              '--host_copt=--target=arm64-apple-macosx14.0', '--host_linkopt=--target=arm64-apple-macosx14.0',
              f'--jobs={args.jobs}', f'--disk_cache={cache}/bazel-disk-cache']
-    run([bazel, f'--output_user_root={cache}/bazel', 'build', *flags,
+    startup = ['--batch'] if args.batch else []
+    run([bazel, *startup, f'--output_user_root={cache}/bazel', 'build', *flags,
          '//metal:libmetal_pjrt_native.dylib'], cwd=source/'plugin-native', env=env)
     dylib = source/'plugin-native/bazel-bin/metal/libmetal_pjrt_native.dylib'
     out = tools/'frozen-wheels'
@@ -145,6 +148,7 @@ def main():
     wheel, = out.glob(f"metaljax-{release['version']}-*.whl")
     manifest = dict(source_commit=release['source_commit'], release=release, build_flags=flags,
                     builder_sha256=sha(Path(__file__)),
+                    bazel_batch=args.batch,
                     publication_status=release.get('publication_status', 'published'),
                     sdkroot=env['SDKROOT'],
                     uv=subprocess.check_output([uv, '--version'], text=True).strip(),

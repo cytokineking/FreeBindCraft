@@ -1,14 +1,14 @@
 {
-  "version": "0.11.9+fbc2",
+  "version": "0.11.9+fbc3",
   "repository": "https://github.com/cytokineking/metaljax",
-  "source_commit": "bcd19ebca757b18f12b7eb963eebfacc428ba1fe",
+  "source_commit": "d5962d9ba7340f8b7b893f9332851d34da31b7d7",
   "upstream_base": "7546eb93aa60c6570efdca95836276d03fe70a94",
-  "tag": "v0.11.9-fbc2",
+  "tag": "v0.11.9-fbc3",
   "jax": "0.11.2",
   "jaxlib": "0.11.2",
   "wheel": {
-    "url": "https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc2/metaljax-0.11.9+fbc2-py3-none-macosx_14_0_arm64.whl",
-    "sha256": "3c41045c1ae5e555d32332656af21cd1b9296e2f6aa3079cc51a088d70a2933f"
+    "url": "https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc3/metaljax-0.11.9+fbc3-py3-none-macosx_14_0_arm64.whl",
+    "sha256": "0fa13c5def15e89024c624b81f5537492d269c6cb209602a5ba1e00baf25faa2"
   },
   "stock_wheel": {
     "filename": "metaljax-0.11.9-py3-none-macosx_14_0_arm64.whl",
@@ -16,8 +16,8 @@
     "url": "https://files.pythonhosted.org/packages/17/b3/c7deaa5599ba600bcd8d2647fcb34e9ea424a2f628f34f1a62de5ca08260/metaljax-0.11.9-py3-none-macosx_14_0_arm64.whl"
   },
   "source_archive": {
-    "url": "https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc2/metaljax-0.11.9-fbc2-source.tar.gz",
-    "sha256": "02818ec0e8a9b3feaf3a9a59270e3973d53661e09df6d75e54200391b928e590"
+    "url": "https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc3/metaljax-0.11.9-fbc3-source.tar.gz",
+    "sha256": "e1c23cdd75dfd36b1736d7e6883d3a251a78994f5902c0f4af002063c9a7915a"
   },
   "mlx_sdk": {
     "url": "https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc1/metaljax-fbc1-mlx-sdk.tar.gz",
@@ -32,12 +32,12 @@
     "url": "https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc1/bazel-8.7.0-darwin-arm64",
     "sha256": "575f20fb23955e02f73519befd180df635b4ed0960c60f0e70fcc8d74014a713"
   },
-  "plugin_sha256": "d8c582111e2b7bfef8ad6e18ccbefb07ed1a22c2e0225c0b88b1bd8c0adb70aa",
+  "plugin_sha256": "25230c9a0a5b342c6a14313a06db0844f0e9cf3ce562ac5b8543a3edfd5449e4",
   "hatchling": "1.32.4",
   "publication_status": "unpublished_candidate",
   "defaults": {
     "slice_before_convert": true,
-    "attention": false
+    "attention": true
   },
   "mlx_runtime_sha256": "72dc8d9a4b1e07df2f6bc91383e0567acf3ce292398ae6ce4ed1d19fce0b1374"
 }

@@ -1,18 +1,21 @@
 # Frozen MetalJAX for Apple Silicon
 
 This draft branch selects the **unpublished production candidate**
-`metaljax==0.11.9+fbc2`, with JAX/jaxlib `0.11.2`. The exact source revision,
+`metaljax==0.11.9+fbc3`, with JAX/jaxlib `0.11.2`. The exact source revision,
 versioned wheel URL and checksums are pinned in [release.json](release.json) and
-[the Apple requirements](../apple-silicon-requirements.txt). The fbc2 source
+[the Apple requirements](../apple-silicon-requirements.txt). The fbc3 source
 commit, tag and artifacts remain local for review. Its planned release URL is
 not yet live; a real public-download installation has not been validated.
 
 The candidate includes the existing static nested-loop repair, the reviewed
 slice-before-BF16-conversion rule and the existing attention capability. Slice
 rewriting is enabled when `METALJAX_SLICE_BEFORE_CONVERT` is unset. Use
-`METALJAX_SLICE_BEFORE_CONVERT=0` for diagnostic opt-out. Attention remains off
-when `METALJAX_EVO_ATTN` is unset; `METALJAX_EVO_ATTN=1` enables its existing
-opt-in path. Attention is not enabled by this default promotion.
+`METALJAX_SLICE_BEFORE_CONVERT=0` for diagnostic opt-out. Attention epilogues
+are also enabled when `METALJAX_EVO_ATTN` is unset.
+Use `./run_apple_silicon.sh --no-attention-epilogues ...` to opt out; the launcher
+sets `METALJAX_EVO_ATTN=0` before Python starts, overriding an inherited `=1`.
+An explicit environment `=0` is preserved when the CLI flag is absent.
+Unsupported shapes/patterns retain the existing lowering.
 
 The slice rule retains the v5 layout, clamping, rounding, all-use, profitability,
 donation and governor constraints. It requires strict aggregate logical savings
@@ -67,19 +70,19 @@ environment. No automatic dependency swap or whole-job restart is introduced.
 
 ## Immutable candidate and build provenance
 
-- Version: `0.11.9+fbc2`.
-- Backend source: `bcd19ebca757b18f12b7eb963eebfacc428ba1fe`.
-- Local, unpushed tag: `v0.11.9-fbc2`.
+- Version: `0.11.9+fbc3`.
+- Backend source: `d5962d9ba7340f8b7b893f9332851d34da31b7d7`.
+- Local, unpushed tag: `v0.11.9-fbc3`.
 - Wheel SHA-256:
-  `3c41045c1ae5e555d32332656af21cd1b9296e2f6aa3079cc51a088d70a2933f`.
+  `0fa13c5def15e89024c624b81f5537492d269c6cb209602a5ba1e00baf25faa2`.
 - Plugin SHA-256:
-  `d8c582111e2b7bfef8ad6e18ccbefb07ed1a22c2e0225c0b88b1bd8c0adb70aa`.
+  `25230c9a0a5b342c6a14313a06db0844f0e9cf3ce562ac5b8543a3edfd5449e4`.
 - MLX runtime SHA-256:
   `72dc8d9a4b1e07df2f6bc91383e0567acf3ce292398ae6ce4ed1d19fce0b1374`.
 
-[Source provenance](production/source.json) records the frozen parent,
+[Source provenance](production/fbc3/source.json) records the frozen parent,
 reviewed patches, defaults patch, exact commit metadata and local tag object.
-The three patches reproduce the committed source tree exactly. Apache-2.0,
+The four patches reproduce the committed source tree exactly. Apache-2.0,
 MLX MIT and third-party license/notice bytes are unchanged from fbc1 in the
 packaged wheel. Frozen MLX SDK, XLA revision
 `91888df6ce85102c30220e41d952065925e10886`, Bazel 8.7.0 and hatchling 1.32.4
@@ -91,7 +94,7 @@ The maintainer builder consumes the exact source commit and verified inputs:
 ```bash
 .venv-metaljax-fbc2-build/bin/python installation/build_metaljax_apple.py \
   --python .venv-metaljax-fbc2-build/bin/python \
-  --source-dir .local/src/metaljax-fbc2 --cache-dir .local/baseline-build --jobs 6
+  --source-dir .local/src/metaljax-fbc3 --cache-dir .local/fbc3-build --jobs 6 --batch
 ```
 
 Before source publication, that directory must be the verified local candidate
@@ -104,6 +107,9 @@ the exact candidate bytes. This reused verified build caches; it was not a
 second cold XLA build. Different toolchains or paths may produce other bytes.
 
 The earlier fbc1 release manifest is preserved in [releases/fbc1.json](releases/fbc1.json).
+The superseded attention-off fbc2 candidate remains preserved in
+[its manifest](releases/fbc2.json) and [original report](production/README.md),
+with its own immutable source, tag, artifacts and measurements.
 Development attention/slice recipes retain that frozen base rather than
 applying their patches a second time to the new production source. Historical
 [fbc1 validation and public release details](https://github.com/cytokineking/FreeBindCraft/blob/cedf3f254059f6a3cbaed450cec23e1a07ebb57a/installation/metaljax/README.md)
@@ -112,13 +118,13 @@ separate from production-candidate validation.
 
 ## Production-candidate validation and approval boundary
 
-The [production report](production/README.md) and
-[receipt](production/validation.json) record the exact packaged-wheel checks,
+The [production report](production/fbc3/README.md) and
+[receipt](production/fbc3/validation.json) record the exact packaged-wheel checks,
 fresh dependency installation, unset/default and opt-out tests, numerical and
 installer integrity tests, and the balanced end-to-end comparison against the
 current released fbc1 configuration. Local wheels, source bundle/archive,
 provenance and checksum files remain preserved under
-`runs/production-fbc2/unpublished-assets/`; they have not been uploaded.
+`runs/production-fbc3/unpublished-assets/`; they have not been uploaded.
 
 Remaining release steps require separate review and approval:
 

@@ -7,7 +7,7 @@ default, or OpenMM on the GPU through OpenCL with `--no-pyrosetta`.
 
 ## Installation
 
-This draft branch selects the **unpublished `0.11.9+fbc2` candidate**. Its
+This draft branch selects the **unpublished `0.11.9+fbc3` candidate**. Its
 planned public URL is not live. Before publication, validation uses the normal
 Python installer with the exact wheel in a verified local cache; see the
 [candidate installation guide and release status](installation/metaljax/README.md).
@@ -33,7 +33,7 @@ Dependencies install inside the checkout under `.venv-metaljax`, `.local`, and
 installation command to add PyRosetta later. FFmpeg is needed only for saving
 animations; the supplied small examples disable them.
 
-The candidate default selects the prebuilt `metaljax==0.11.9+fbc2` arm64 macOS wheel.
+The candidate default selects the prebuilt `metaljax==0.11.9+fbc3` arm64 macOS wheel.
 Its versioned release URL and SHA-256 are pinned, together with JAX/jaxlib
 `0.11.2`. There is no user source-build step or automatic upstream upgrade.
 The installer reports the selected backend and installed versions.
@@ -53,12 +53,23 @@ developer override takes precedence over both modes; unset it to return to the
 frozen build. Local overrides are user-selected artifacts, outside the
 frozen-wheel checksum guarantee.
 
-The fbc2 candidate enables slice-before-BF16-conversion when
+The fbc3 candidate enables slice-before-BF16-conversion when
 `METALJAX_SLICE_BEFORE_CONVERT` is unset; set it to `0` for diagnostic opt-out.
-Attention remains disabled by default, with the existing
-`METALJAX_EVO_ATTN=1` opt-in. Precision, scheduling and the memory governor are
-unchanged. The [production report](installation/metaljax/production/README.md)
-records the exact artifact's fresh installation and shipping-default checks.
+Attention epilogues also default on; unsupported shapes use the existing
+lowering. To opt out, add the Apple launcher flag:
+
+```bash
+./run_apple_silicon.sh --no-attention-epilogues \
+  --settings settings_target/ubiquitin_apple_small.json \
+  --advanced settings_advanced/apple_silicon_ubiquitin_small.json \
+  --max-attempts 1 --seed 42 --no-plots --no-animations
+```
+
+The flag sets `METALJAX_EVO_ATTN=0` before Python starts and overrides an
+inherited `=1`. An explicit environment `=0` is also preserved. Scientific
+settings, precision, scheduling and the memory governor are unchanged. The
+[production report](installation/metaljax/production/fbc3/README.md) records the
+exact candidate's checks; earlier opt-in attention measurements remain historical.
 
 ## Run a small example
 
@@ -97,7 +108,7 @@ It uses a 65-residue binder and writes to `runs/pdl1-apple-example/output`.
 
 ## Tested configuration and performance
 
-The candidate runtime uses Python 3.12, JAX/jaxlib 0.11.2, metaljax 0.11.9+fbc2, and
+The candidate runtime uses Python 3.12, JAX/jaxlib 0.11.2, metaljax 0.11.9+fbc3, and
 OpenMM 8.6.1. Exact dependencies are recorded in the
 [Apple Silicon requirements](installation/apple-silicon-requirements.txt) and
 [PyRosetta requirements](installation/pyrosetta-apple-requirements.txt).

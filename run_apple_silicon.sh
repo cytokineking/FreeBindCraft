@@ -3,6 +3,18 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 repo_dir="$PWD"
+forwarded=()
+for arg in "$@"; do
+  case "$arg" in
+    --no-attention-epilogues) export METALJAX_EVO_ATTN=0 ;;
+    --help|-h)
+      echo 'Apple launcher option: --no-attention-epilogues disables attention epilogues.'
+      forwarded+=("$arg") ;;
+    *) forwarded+=("$arg") ;;
+  esac
+done
+# The conditional expansion also handles an empty array on macOS Bash 3.2.
+set -- ${forwarded[@]+"${forwarded[@]}"}
 export JAX_PLATFORMS=metal
 export JAX_DISABLE_JIT=0
 export OPENMM_PLATFORM_ORDER="${OPENMM_PLATFORM_ORDER:-OpenCL}"

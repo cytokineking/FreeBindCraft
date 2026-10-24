@@ -192,7 +192,7 @@ def main():
         **read_footprint(os.getpid()),
         forward_seconds=forward_times, median_forward_seconds=float(np.median(forward_times)),
         gradient_dispatch=gradient_dispatch, forward_dispatch=forward_dispatch,
-        attention=os.environ.get('METALJAX_EVO_ATTN','0'), profiling=args.profile,
+        attention=os.environ.get('METALJAX_EVO_ATTN','unset'), profiling=args.profile,
         dispatch_stats_enabled=not args.no_dispatch_stats,
         diagnostic_arrays=args.diagnostic_arrays,
         slice_before_convert=os.environ.get('METALJAX_SLICE_BEFORE_CONVERT','unset'),
