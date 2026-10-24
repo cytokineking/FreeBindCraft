@@ -34,7 +34,7 @@
   },
   "plugin_sha256": "25230c9a0a5b342c6a14313a06db0844f0e9cf3ce562ac5b8543a3edfd5449e4",
   "hatchling": "1.32.4",
-  "publication_status": "unpublished_candidate",
+  "publication_status": "published",
   "defaults": {
     "slice_before_convert": true,
     "attention": true
