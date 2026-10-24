@@ -83,14 +83,17 @@ def prepare_archive(archive, destination, prefix):
 
 def main():
     root = Path(__file__).resolve().parents[1]
-    release = json.loads((root/'installation/metaljax/release.json').read_text())
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--release-manifest', type=Path, default=root/'installation/metaljax/release.json')
     parser.add_argument('--python', type=Path, default=root/'.venv-metaljax/bin/python')
-    parser.add_argument('--source-dir', type=Path, default=root/'.local/src/metaljax-fbc1')
+    parser.add_argument('--source-dir', type=Path)
     parser.add_argument('--cache-dir', type=Path, default=root/'.local/metaljax-build')
     parser.add_argument('--jobs', type=int, default=12)
     parser.add_argument('--install', action='store_true', help='Install into --python only')
     args = parser.parse_args()
+    release = json.loads(args.release_manifest.read_text())
+    if args.source_dir is None:
+        args.source_dir = root/'.local/src'/('metaljax-'+release['version'].split('+')[-1])
     if (platform.system(), platform.machine()) != ('Darwin', 'arm64'):
         parser.error('Requires native arm64 macOS')
     # Do not resolve the interpreter symlink: it selects the global interpreter.
@@ -141,17 +144,22 @@ def main():
     run([uv, 'build', '--wheel', '--build-constraint', constraints, '--out-dir', out], cwd=source, env=env)
     wheel, = out.glob(f"metaljax-{release['version']}-*.whl")
     manifest = dict(source_commit=release['source_commit'], release=release, build_flags=flags,
+                    builder_sha256=sha(Path(__file__)),
+                    publication_status=release.get('publication_status', 'published'),
+                    sdkroot=env['SDKROOT'],
+                    uv=subprocess.check_output([uv, '--version'], text=True).strip(),
                     compiler=subprocess.check_output(['xcrun', 'clang++', '--version'], text=True).strip(),
                     python=subprocess.check_output([str(python), '--version'], text=True).strip(),
                     jax=target['jax'], jaxlib=target['jaxlib'], macos=platform.mac_ver()[0],
                     plugin_sha256=sha(dylib), wheel_sha256=sha(wheel),
-                    matches_published_plugin=sha(dylib) == release['plugin_sha256'],
-                    matches_published_wheel=sha(wheel) == release['wheel']['sha256'])
+                    runtime_sha256={p.name: sha(p) for p in sorted((sdk/'lib').iterdir()) if p.is_file()},
+                    matches_manifest_plugin=sha(dylib) == release['plugin_sha256'],
+                    matches_manifest_wheel=sha(wheel) == release['wheel']['sha256'])
     (out/'build-manifest.json').write_text(json.dumps(manifest, indent=2)+'\n')
     if args.install:
         run([uv, 'pip', 'install', '--python', python, '--no-deps', '--reinstall', wheel], env=env)
     print(f'Built {wheel}\nManifest: {out}/build-manifest.json', flush=True)
-    print('Byte-identical to published wheel:', manifest['matches_published_wheel'], flush=True)
+    print('Byte-identical to manifest wheel:', manifest['matches_manifest_wheel'], flush=True)
 
 
 if __name__ == '__main__':

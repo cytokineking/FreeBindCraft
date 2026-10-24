@@ -1,11 +1,18 @@
 # Apple Silicon (experimental)
 
 FreeBindCraft runs natively on Apple Silicon using
-[FreeBindCraft's frozen MetalJAX build](https://github.com/cytokineking/metaljax/releases/tag/v0.11.9-fbc1) for AlphaFold design and
+[FreeBindCraft's frozen MetalJAX build](installation/metaljax/README.md) for AlphaFold design and
 ProteinMPNN on the Apple GPU. Relaxation uses native PyRosetta on the CPU by
 default, or OpenMM on the GPU through OpenCL with `--no-pyrosetta`.
 
 ## Installation
+
+This draft branch selects the **unpublished `0.11.9+fbc2` candidate**. Its
+planned public URL is not live. Before publication, validation uses the normal
+Python installer with the exact wheel in a verified local cache; see the
+[candidate installation guide and release status](installation/metaljax/README.md).
+The ordinary installation commands below require the separately approved
+publication and public-download validation to be completed first.
 
 Use native arm64 macOS with Apple Command Line Tools installed. If needed, run
 `xcode-select --install` and complete Apple's installer. From the repository:
@@ -26,7 +33,7 @@ Dependencies install inside the checkout under `.venv-metaljax`, `.local`, and
 installation command to add PyRosetta later. FFmpeg is needed only for saving
 animations; the supplied small examples disable them.
 
-The default installs the prebuilt `metaljax==0.11.9+fbc1` arm64 macOS wheel.
+The candidate default selects the prebuilt `metaljax==0.11.9+fbc2` arm64 macOS wheel.
 Its versioned release URL and SHA-256 are pinned, together with JAX/jaxlib
 `0.11.2`. There is no user source-build step or automatic upstream upgrade.
 The installer reports the selected backend and installed versions.
@@ -43,8 +50,15 @@ switching modes explicitly replaces it. This is an installation choice, not a
 runtime fallback. A download/checksum failure stops installation before Python
 packages change. An explicit `FREEBINDCRAFT_METALJAX_WHEEL=/absolute/path.whl`
 developer override takes precedence over both modes; unset it to return to the
-published build. Local overrides are user-selected artifacts, outside the
-published-wheel checksum guarantee.
+frozen build. Local overrides are user-selected artifacts, outside the
+frozen-wheel checksum guarantee.
+
+The fbc2 candidate enables slice-before-BF16-conversion when
+`METALJAX_SLICE_BEFORE_CONVERT` is unset; set it to `0` for diagnostic opt-out.
+Attention remains disabled by default, with the existing
+`METALJAX_EVO_ATTN=1` opt-in. Precision, scheduling and the memory governor are
+unchanged. The [production report](installation/metaljax/production/README.md)
+records the exact artifact's fresh installation and shipping-default checks.
 
 ## Run a small example
 
@@ -83,7 +97,7 @@ It uses a 65-residue binder and writes to `runs/pdl1-apple-example/output`.
 
 ## Tested configuration and performance
 
-The pinned runtime uses Python 3.12, JAX/jaxlib 0.11.2, metaljax 0.11.9+fbc1, and
+The candidate runtime uses Python 3.12, JAX/jaxlib 0.11.2, metaljax 0.11.9+fbc2, and
 OpenMM 8.6.1. Exact dependencies are recorded in the
 [Apple Silicon requirements](installation/apple-silicon-requirements.txt) and
 [PyRosetta requirements](installation/pyrosetta-apple-requirements.txt).

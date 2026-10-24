@@ -76,7 +76,7 @@ markupsafe==3.0.4
 matplotlib==3.11.2
 matplotlib-inline==0.2.2
 mdurl==0.1.2
-metaljax @ https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc1/metaljax-0.11.9+fbc1-py3-none-macosx_14_0_arm64.whl#sha256=8b3ec3bd4a71e57d7c77a0f3f8b1ee9fefe28b4ca81c0b325dc6d2975938d079
+metaljax @ https://github.com/cytokineking/metaljax/releases/download/v0.11.9-fbc2/metaljax-0.11.9+fbc2-py3-none-macosx_14_0_arm64.whl#sha256=3c41045c1ae5e555d32332656af21cd1b9296e2f6aa3079cc51a088d70a2933f
 mistune==3.3.4
 ml-collections==1.1.0
 ml-dtypes==0.6.0

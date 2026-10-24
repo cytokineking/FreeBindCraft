@@ -28,6 +28,15 @@ def environment(enabled):
     return env
 
 
+def shipping_environment():
+    """Select Metal without overriding backend optimization or resource defaults."""
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(('METALJAX_', 'MLX_', 'FBC_', 'JAX_'))}
+    env.update(JAX_PLATFORMS='metal,cpu', JAX_DISABLE_JIT='0',
+               JAX_ENABLE_COMPILATION_CACHE='false', MPLBACKEND='Agg')
+    return env
+
+
 def stop_own(child):
     # The memory monitor starts a separate process group. Resolve descendants
     # from this live child, never from an untrusted/stale pid file.

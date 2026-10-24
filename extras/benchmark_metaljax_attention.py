@@ -195,7 +195,10 @@ def main():
         attention=os.environ.get('METALJAX_EVO_ATTN','0'), profiling=args.profile,
         dispatch_stats_enabled=not args.no_dispatch_stats,
         diagnostic_arrays=args.diagnostic_arrays,
-        slice_before_convert=os.environ.get('METALJAX_SLICE_BEFORE_CONVERT','0'),
+        slice_before_convert=os.environ.get('METALJAX_SLICE_BEFORE_CONVERT','unset'),
+        backend_environment={k:os.environ.get(k) for k in ['METALJAX_SLICE_BEFORE_CONVERT',
+            'METALJAX_EVO_ATTN','METALJAX_MATMUL_PRECISION','METALJAX_MEM_BUDGET_MB',
+            'MLX_MAX_OPS_PER_BUFFER','MLX_MAX_MB_PER_BUFFER','METALJAX_LOOP_INFLIGHT_MB']},
         persistent_jax_cache=False,
         plugin_sha256=hashlib.sha256(Path(importlib.metadata.distribution('metaljax').locate_file('metaljax/lib/libmetal_pjrt_native.dylib')).read_bytes()).hexdigest(),
         scope='Fixed-input AF2 forward and last-recycle VJP, not a trajectory or quality benchmark')

@@ -15,6 +15,18 @@ spec.loader.exec_module(installer)
 
 
 class AppleDependencyInstallTests(unittest.TestCase):
+    def test_verified_default_cache_does_not_require_publication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = Path(temporary)
+            wheel = cache/'candidate.whl'
+            wheel.write_bytes(b'verified unpublished candidate')
+            release = {'wheel': {'url': 'https://example.invalid/future/candidate.whl',
+                                'sha256': hashlib.sha256(wheel.read_bytes()).hexdigest()}}
+            with patch.dict(os.environ, {}, clear=True), patch.object(installer.urllib.request, 'urlretrieve') as network:
+                mode, selected, digest = installer.select_wheel(release, cache)
+            network.assert_not_called()
+            self.assertEqual((mode, selected, digest), ('frozen', wheel, release['wheel']['sha256']))
+
     def test_checksum_failure_preserves_cache_and_removes_partial(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

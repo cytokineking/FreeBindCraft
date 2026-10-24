@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import tarfile
 
-from guard_metaljax_job import environment, run_guarded
+from guard_metaljax_job import environment, shipping_environment, run_guarded
 from run_metaljax_slice_comparison import identity
 
 BASE = 'cf136d1033790eef7b866bf07e92ed82b5572003'
@@ -34,6 +34,9 @@ def main():
                         help='Verify and retain the completed prefix; incomplete snapshots must be moved aside')
     parser.add_argument('--baseline-python', type=Path, default=root/'.venv-metaljax-baseline/bin/python')
     parser.add_argument('--candidate-python', type=Path, default=root/'.venv-metaljax-slice/bin/python')
+    parser.add_argument('--baseline-manifest', type=Path, default=root/'.local/src/metaljax-baseline/build-tools/attention-wheels/build-manifest.json')
+    parser.add_argument('--candidate-manifest', type=Path, default=root/'.local/src/metaljax-slice/build-tools/attention-wheels/build-manifest.json')
+    parser.add_argument('--shipping-defaults', action='store_true')
     args = parser.parse_args()
     if sorted(args.order) != list('AABB'):
         parser.error('Use a balanced order with two processes per arm')
@@ -49,8 +52,8 @@ def main():
     out.mkdir(parents=True, exist_ok=args.resume)
     installed = {arm: identity(python.absolute()) for arm, python in
                  [('A', args.baseline_python), ('B', args.candidate_python)]}
-    for arm, source in [('A', 'baseline'), ('B', 'slice')]:
-        manifest = json.loads((root/f'.local/src/metaljax-{source}/build-tools/attention-wheels/build-manifest.json').read_text())
+    for arm, path in [('A', args.baseline_manifest), ('B', args.candidate_manifest)]:
+        manifest = json.loads(path.read_text())
         if installed[arm]['files']['metaljax/lib/libmetal_pjrt_native.dylib'] != manifest['plugin_sha256']:
             raise RuntimeError('Trajectory plugin differs from its build manifest')
         if installed[arm]['files']['metaljax/lib/mlx/lib/libmlx_metaljax.dylib'] != '72dc8d9a4b1e07df2f6bc91383e0567acf3ce292398ae6ce4ed1d19fce0b1374':
@@ -61,6 +64,8 @@ def main():
     native = {relative: sha(assets/relative) for relative in
               ['.local/src/FASPR/FASPR', '.local/src/sc-rs/target/release/sc', '.local/dssp/bin/mkdssp']}
     identities = dict(installed=installed, native_tools=native)
+    if args.shipping_defaults:
+        identities['shipping_defaults'] = True
     if args.resume:
         if identities != json.loads((out/'identities.json').read_text()):
             raise RuntimeError('Resume environments/native tools differ from the saved series')
@@ -120,7 +125,7 @@ def main():
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.symlink_to(assets/relative, target_is_directory=True)
         python = (args.baseline_python if arm == 'A' else args.candidate_python).absolute()
-        env = environment(arm == 'B')
+        env = shipping_environment() if args.shipping_defaults else environment(arm == 'B')
         command = [python, root/'extras/monitor_macos_job.py', '--output-dir', snapshot/'memory',
                    '--interval', '.5', '--max-tree-rss-gib', '24', '--max-hours', '.5', '--',
                    python, '-u', out/'benchmark-fixed-budget.py', '--root', snapshot,

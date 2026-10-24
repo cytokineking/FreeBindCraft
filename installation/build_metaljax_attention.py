@@ -37,7 +37,7 @@ def main():
     spec = importlib.util.spec_from_file_location('frozen_builder', root/'installation/build_metaljax_apple.py')
     base = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(base)
-    release = json.loads((root/'installation/metaljax/release.json').read_text())
+    release = json.loads((root/'installation/metaljax/releases/fbc1.json').read_text())
     query = ("import importlib.metadata as m,json,sys; print(json.dumps(dict("
              "venv=sys.prefix!=sys.base_prefix,jax=m.version('jax'),jaxlib=m.version('jaxlib'))))")
     target = json.loads(subprocess.check_output([str(python), '-c', query], text=True))

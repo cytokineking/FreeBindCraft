@@ -10,7 +10,7 @@ from pathlib import Path
 import subprocess
 
 import numpy as np
-from guard_metaljax_job import environment, run_guarded
+from guard_metaljax_job import environment, shipping_environment, run_guarded
 from check_metaljax_dispatch_accounting import check as check_dispatch
 
 
@@ -50,8 +50,10 @@ def main():
     parser.add_argument('--binder-length', type=int, default=70)
     parser.add_argument('--diagnostic-trace', type=Path, help='Separate diagnostic run, never normal timing evidence')
     parser.add_argument('--debug', action='store_true')
-    parser.add_argument('--attention', choices=['0', '1'], default='1',
+    parser.add_argument('--attention', choices=['0', '1'],
                         help='Use the same attention setting in both arms')
+    parser.add_argument('--shipping-defaults', action='store_true',
+                        help='Leave slice, attention, precision, governor and scheduling variables unset')
     args = parser.parse_args()
     if (not args.order or set(args.order)-{'A', 'B'} or args.repeats < 1 or
         ((args.reference is None or args.previous is None) and args.order[0] != 'A')):
@@ -79,8 +81,10 @@ def main():
     for arm in args.order:
         counts[arm] += 1
         name = arm.lower()+str(counts[arm])
-        python, env = pythons[arm], environment(arm == 'B')
-        env['METALJAX_EVO_ATTN'] = args.attention
+        python = pythons[arm]
+        env = shipping_environment() if args.shipping_defaults else environment(arm == 'B')
+        if args.attention is not None:
+            env['METALJAX_EVO_ATTN'] = args.attention
         if args.debug:
             env['METALJAX_DEBUG'] = '1'
         probe = 'benchmark_metaljax_attention.py'
@@ -120,6 +124,7 @@ def main():
         results.append(dict(arm=arm, name=name, numeric=numeric, report=report,
                             memory={k: v for k, v in memory.items() if k.startswith(('peak_', 'maximum_'))}))
         summary = dict(order=args.order, results=results, diagnostic=bool(args.diagnostic_trace or args.debug),
+                       shipping_defaults=args.shipping_defaults,
                        sampling_unit='fresh process; warmed calls within a process are correlated',
                        limitations='Shared Mac; guards do not establish GPU exclusivity or thermal control.')
         for key in ['first_forward_seconds', 'first_grad_seconds', 'median_forward_seconds', 'median_grad_seconds']:

@@ -1,0 +1,98 @@
+--- a/plugin-native/metal/metal_lowering.cc
++++ b/plugin-native/metal/metal_lowering.cc
+@@ -10188,7 +10188,7 @@
+ // still define indexing, clamping, layout handling and BF16 rounding.
+ void SliceBeforeConvert(mlir::ModuleOp module) {
+   const char* enabled = std::getenv("METALJAX_SLICE_BEFORE_CONVERT");
+-  if (enabled == nullptr || std::string(enabled) != "1") return;
++  if (enabled != nullptr && std::string(enabled) != "1") return;
+   auto count = [](mlir::RankedTensorType t) -> int64_t {
+     if (!t || !t.hasStaticShape() || t.getEncoding()) return 0;
+     int64_t n = 1;
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -1,6 +1,6 @@
+ [project]
+ name = "metaljax"
+-version = "0.11.9+fbc4slicedev5"
++version = "0.11.9+fbc2"
+ description = "Experimental Metal backend for JAX on Apple silicon: a native PJRT plugin executing StableHLO on the GPU through a vendored MLX runtime"
+ readme = "README.md"
+ requires-python = ">=3.12"
+--- a/src/metaljax/__init__.py
++++ b/src/metaljax/__init__.py
+@@ -14,5 +14,5 @@
+ the numbers.
+ """
+ 
+-__version__ = "0.11.9+fbc4slicedev5"
++__version__ = "0.11.9+fbc2"
+ __all__ = ["__version__"]
+--- a/tests/test_slice_before_convert.py
++++ b/tests/test_slice_before_convert.py
+@@ -243,11 +243,12 @@
+         pytest.skip('requires the native Metal development backend')
+     directory = tmp_path_factory.mktemp('slice-before-convert')
+     outputs = []
+-    for mode in ['0', '1']:
++    for mode in ['0', '1', 'unset']:
+         arm = directory / mode
+         arm.mkdir()
+         env = dict(os.environ, JAX_PLATFORMS='metal', METALJAX_DEBUG='1',
+                    METALJAX_SLICE_BEFORE_CONVERT=mode, METALJAX_MATMUL_PRECISION='high')
++        if mode == 'unset': env.pop('METALJAX_SLICE_BEFORE_CONVERT', None)
+         path = arm / 'arrays.npz'
+         p = subprocess.run([sys.executable, __file__, '--worker', str(path)],
+                            env=env, capture_output=True, text=True, timeout=180)
+@@ -307,3 +308,17 @@
+ 
+ if __name__ == '__main__':
+     worker(Path(sys.argv[2]))
++
++
++def test_unset_default_is_enabled_and_exact(comparisons):
++    with np.load(comparisons[0][0]) as off, np.load(comparisons[2][0]) as default:
++        assert off.files == default.files
++        for key in off.files:
++            assert off[key].dtype == default[key].dtype and off[key].shape == default[key].shape
++            assert off[key].tobytes() == default[key].tobytes(), key
++    # Default and explicit-on must admit exactly the same complete case census.
++    for index in [1, 2]:
++        rows = re.findall(r'slice-before-convert: conversions=(\d+) slices=(\d+) helpers=(\d+)', comparisons[index][1])
++        assert rows
++        if index == 1: enabled = rows
++        else: assert rows == enabled
+--- a/tests/test_evo_attention.py
++++ b/tests/test_evo_attention.py
+@@ -156,3 +156,19 @@
+ 
+ 
+ if __name__=='__main__' and sys.argv[1:2]==['--worker']:_worker(Path(sys.argv[2]))
++
++
++def test_unset_attention_remains_off(tmp_path, comparisons):
++    env = dict(os.environ, JAX_PLATFORMS='metal', METALJAX_DEBUG='1', METALJAX_MATMUL_PRECISION='high')
++    env.pop('METALJAX_EVO_ATTN', None)
++    destination = tmp_path/'unset.npz'
++    p = subprocess.run([sys.executable, __file__, '--worker', str(destination)], env=env, capture_output=True, text=True, timeout=180)
++    (tmp_path/'worker.log').write_text(p.stdout+p.stderr)
++    assert p.returncode == 0, p.stderr[-8000:]
++    assert not re.search(r'evo-attn: (?:forward|backward)=[1-9]', p.stderr)
++    _, reports = comparisons
++    with np.load(reports[0][0]) as off, np.load(destination) as default:
++        assert off.files == default.files
++        for key in off.files:
++            assert off[key].dtype == default[key].dtype and off[key].shape == default[key].shape
++            assert off[key].tobytes() == default[key].tobytes(), key
+--- /dev/null
++++ b/FREEBINDCRAFT_PRODUCTION.md
+@@ -0,0 +1,9 @@
++# FreeBindCraft 0.11.9+fbc2 candidate
++
++Frozen parent: 678c58eaaafc33c5b31bcc6b6d0176dd078f6063.
++Includes the reviewed BF16 attention capability and v5 slice-before-convert rule.
++Slice conversion defaults on; METALJAX_SLICE_BEFORE_CONVERT=0 disables it diagnostically.
++Attention remains off unless METALJAX_EVO_ATTN=1.
++JAX/jaxlib 0.11.2 and the fbc1 frozen MLX SDK/runtime are retained.
++Scheduling and governor defaults are unchanged. Licensing/notices remain in place.
++This revision and tag remain local until separate release approval.
