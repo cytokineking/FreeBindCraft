@@ -167,6 +167,24 @@ and maintainer build instructions](installation/metaljax/README.md). Future
 upgrades require a new reviewed source commit, versioned artifact and checksum;
 installation never follows a moving upstream branch.
 
+### Unchunked model preparation
+
+The Apple installer also applies a pinned ColabDesign preparation patch. Metal
+uses an unchunked configuration for both forward and gradient callables,
+including models above the dependency's previous 384-residue cutoff. CPU/CUDA
+preparation behavior and the published MetalJAX wheel are unchanged.
+
+A memory preflight checks the attention buffer size and an empirical model
+working-set estimate before preparing new callables. It accounts for verified
+resident model memory during reuse and reports uncertain ownership explicitly.
+Insufficient estimated headroom raises `MemoryError`; native runtime memory
+and pressure guards remain active. Admission is not a peak-memory guarantee.
+The empirical calibration comes from one 406-residue BF16 multimer fixture;
+other model sizes, modes and devices need application validation.
+
+See the [preparation patch and validation](installation/colabdesign-metal/README.md)
+for scope, measurements and remaining draft qualification.
+
 ## Verify the installation
 
 Run the Metal alignment tests and native OpenMM/DSSP/ProteinMPNN check:

@@ -1,0 +1,408 @@
+{
+  "scope": "Fixed-input complete recycle, one forward plus one gradient; not full-trajectory throughput",
+  "runtime": "metaljax 0.11.9+fbc3; JAX/jaxlib 0.11.2",
+  "comparison_order": "146 baseline/candidate; 406 baseline/candidate/candidate/baseline",
+  "timing": "One warm-up and two synchronized calls per original/perturbed state; fresh processes are sampling units",
+  "control": "Six-second quiet admission; continuous process/GPU/memory records; aggregate GPU data does not establish per-process exclusivity or control thermals",
+  "groups": {
+    "smoke-146": {
+      "processes": [
+        {
+          "name": "baseline",
+          "arm": "baseline",
+          "initial_fingerprint": "738e64aaf579ac1984f464cf8242d234fc96da17db8e04385f7129c1baad46c3",
+          "mean_seconds": 1.352139750249762,
+          "median_seconds": 1.3526360629998635,
+          "samples_seconds": [
+            1.3538712089998626,
+            1.3514009169998644,
+            1.3473920829997041,
+            1.3558947919996172
+          ],
+          "first_call_seconds": 4.999047249999876,
+          "outputs": {
+            "original": [
+              "eb6e6303bbbe3fa478283384a045d8cdfd40efd2ff556c35ec37442b95ab4eea"
+            ],
+            "changed": [
+              "dcf1630cd278256de329925574bc9a98a72a1f6be22f8da2c3301840398327ce"
+            ]
+          },
+          "all_outputs_finite": true,
+          "peak_sampled_footprint_gib": 6.788104392588139,
+          "peak_lifetime_footprint_gib": 6.816897749900818,
+          "peak_sampled_rss_gib": 1.622711181640625,
+          "pressure_levels": [
+            1
+          ],
+          "max_swap_used_bytes": 0,
+          "busy_samples": 1,
+          "running_busy_samples": 0,
+          "native_sha256": "25230c9a0a5b342c6a14313a06db0844f0e9cf3ce562ac5b8543a3edfd5449e4",
+          "mlx_sha256": "72dc8d9a4b1e07df2f6bc91383e0567acf3ce292398ae6ce4ed1d19fce0b1374",
+          "fixture_sha256": "74445faf0663c6c450ee284b9e0db5eed67e2089527b372729b44e2226e63b6a",
+          "prep_sha256": "b2ebf1ccb2c8f8fd0cb65871fbc307f65fc32d582ffe2547f118c1102de6df38",
+          "global_subbatch_size": null,
+          "warm_repreparation_finite": null
+        },
+        {
+          "name": "candidate",
+          "arm": "candidate",
+          "initial_fingerprint": "738e64aaf579ac1984f464cf8242d234fc96da17db8e04385f7129c1baad46c3",
+          "mean_seconds": 1.3778994474998854,
+          "median_seconds": 1.3782678119998764,
+          "samples_seconds": [
+            1.3807302909999635,
+            1.3730555410002125,
+            1.3820066249995762,
+            1.3758053329997892
+          ],
+          "first_call_seconds": 5.081513500000256,
+          "outputs": {
+            "original": [
+              "eb6e6303bbbe3fa478283384a045d8cdfd40efd2ff556c35ec37442b95ab4eea"
+            ],
+            "changed": [
+              "dcf1630cd278256de329925574bc9a98a72a1f6be22f8da2c3301840398327ce"
+            ]
+          },
+          "all_outputs_finite": true,
+          "peak_sampled_footprint_gib": 6.832339398562908,
+          "peak_lifetime_footprint_gib": 6.864031992852688,
+          "peak_sampled_rss_gib": 1.6025848388671875,
+          "pressure_levels": [
+            1
+          ],
+          "max_swap_used_bytes": 0,
+          "busy_samples": 0,
+          "running_busy_samples": 0,
+          "native_sha256": "25230c9a0a5b342c6a14313a06db0844f0e9cf3ce562ac5b8543a3edfd5449e4",
+          "mlx_sha256": "72dc8d9a4b1e07df2f6bc91383e0567acf3ce292398ae6ce4ed1d19fce0b1374",
+          "fixture_sha256": "74445faf0663c6c450ee284b9e0db5eed67e2089527b372729b44e2226e63b6a",
+          "prep_sha256": "97217f819ed5f456f69315998aac2e44373ad73a318341823c4248669a482b59",
+          "global_subbatch_size": null,
+          "warm_repreparation_finite": true,
+          "warm_repreparation_policy": {
+            "total_residues": 146,
+            "global_subbatch_size": null,
+            "memory_status": "admitted",
+            "credited_retained_model_bytes": 372342784
+          },
+          "resize_repreparation_policy": {
+            "total_residues": 146,
+            "global_subbatch_size": null,
+            "memory_status": "admitted",
+            "credited_retained_model_bytes": 372342784
+          }
+        }
+      ],
+      "matched_initial_state": true,
+      "matched_full_outputs": true,
+      "process_mean_seconds_by_arm": {
+        "baseline": [
+          1.352139750249762
+        ],
+        "candidate": [
+          1.3778994474998854
+        ]
+      },
+      "baseline_mean_seconds": 1.352139750249762,
+      "candidate_mean_seconds": 1.3778994474998854,
+      "speedup": 0.9813050964663186,
+      "time_reduction": -0.019051061286649684,
+      "quiet_process_subset": {
+        "process_mean_seconds_by_arm": {
+          "baseline": [
+            1.352139750249762
+          ],
+          "candidate": [
+            1.3778994474998854
+          ]
+        },
+        "baseline_mean_seconds": 1.352139750249762,
+        "candidate_mean_seconds": 1.3778994474998854,
+        "speedup": 0.9813050964663186,
+        "time_reduction": -0.019051061286649684,
+        "note": "Exclude any process with a running CPU-contention sample from headline timing; aggregate GPU attribution and thermals remain uncontrolled"
+      }
+    },
+    "compare-406": {
+      "processes": [
+        {
+          "name": "a1",
+          "arm": "baseline",
+          "initial_fingerprint": "ed5c12c3135568cc9092da91b75bb98d1ee9b150a83853a68f047e6848a6f7a4",
+          "mean_seconds": 39.33764974999997,
+          "median_seconds": 39.27475141649984,
+          "samples_seconds": [
+            39.142251708,
+            39.76164783400009,
+            39.407251124999675,
+            39.03944833300011
+          ],
+          "first_call_seconds": 45.4508299590002,
+          "outputs": {
+            "original": [
+              "8ccff2e01b6c0600f31a70fb289f7b6bd75365f42125323982b128c9c6e87576"
+            ],
+            "changed": [
+              "5f69c9179bc94cb9afa1ebe9720b4a61e8e307a2581e31e54e133ddb971f72d4"
+            ]
+          },
+          "all_outputs_finite": true,
+          "peak_sampled_footprint_gib": 17.664371363818645,
+          "peak_lifetime_footprint_gib": 17.99597478657961,
+          "peak_sampled_rss_gib": 2.45220947265625,
+          "pressure_levels": [
+            1
+          ],
+          "max_swap_used_bytes": 0,
+          "busy_samples": 1,
+          "running_busy_samples": 1,
+          "native_sha256": "25230c9a0a5b342c6a14313a06db0844f0e9cf3ce562ac5b8543a3edfd5449e4",
+          "mlx_sha256": "72dc8d9a4b1e07df2f6bc91383e0567acf3ce292398ae6ce4ed1d19fce0b1374",
+          "fixture_sha256": "1d0f237b528ceb1ca46464ebf57d37d9ad46bf3998d890a7e0dc9290c8ec6c4f",
+          "prep_sha256": "b2ebf1ccb2c8f8fd0cb65871fbc307f65fc32d582ffe2547f118c1102de6df38",
+          "global_subbatch_size": 4,
+          "warm_repreparation_finite": null
+        },
+        {
+          "name": "a2",
+          "arm": "baseline",
+          "initial_fingerprint": "ed5c12c3135568cc9092da91b75bb98d1ee9b150a83853a68f047e6848a6f7a4",
+          "mean_seconds": 38.663607552000144,
+          "median_seconds": 38.64666204150012,
+          "samples_seconds": [
+            38.671653375000005,
+            38.62167070800024,
+            38.61429575000011,
+            38.74681037500022
+          ],
+          "first_call_seconds": 46.05751791700004,
+          "outputs": {
+            "original": [
+              "8ccff2e01b6c0600f31a70fb289f7b6bd75365f42125323982b128c9c6e87576"
+            ],
+            "changed": [
+              "5f69c9179bc94cb9afa1ebe9720b4a61e8e307a2581e31e54e133ddb971f72d4"
+            ]
+          },
+          "all_outputs_finite": true,
+          "peak_sampled_footprint_gib": 18.03010856360197,
+          "peak_lifetime_footprint_gib": 18.035555951297283,
+          "peak_sampled_rss_gib": 2.4240264892578125,
+          "pressure_levels": [
+            1
+          ],
+          "max_swap_used_bytes": 0,
+          "busy_samples": 0,
+          "running_busy_samples": 0,
+          "native_sha256": "25230c9a0a5b342c6a14313a06db0844f0e9cf3ce562ac5b8543a3edfd5449e4",
+          "mlx_sha256": "72dc8d9a4b1e07df2f6bc91383e0567acf3ce292398ae6ce4ed1d19fce0b1374",
+          "fixture_sha256": "1d0f237b528ceb1ca46464ebf57d37d9ad46bf3998d890a7e0dc9290c8ec6c4f",
+          "prep_sha256": "b2ebf1ccb2c8f8fd0cb65871fbc307f65fc32d582ffe2547f118c1102de6df38",
+          "global_subbatch_size": 4,
+          "warm_repreparation_finite": null
+        },
+        {
+          "name": "b1",
+          "arm": "candidate",
+          "initial_fingerprint": "ed5c12c3135568cc9092da91b75bb98d1ee9b150a83853a68f047e6848a6f7a4",
+          "mean_seconds": 13.279367614750072,
+          "median_seconds": 13.287582292000025,
+          "samples_seconds": [
+            12.725846167000327,
+            12.8710518339999,
+            13.816459707999911,
+            13.70411275000015
+          ],
+          "first_call_seconds": 16.546711291000065,
+          "outputs": {
+            "original": [
+              "deebd07f304e4b1379708a06fae18001ec9dd76ac2bd4bf42d7b004d2a007902"
+            ],
+            "changed": [
+              "287b830b72133a55ac4a0daf68a81a471d69eb56f2c1d283ed443c0ab57c555d"
+            ]
+          },
+          "all_outputs_finite": true,
+          "peak_sampled_footprint_gib": 27.477268628776073,
+          "peak_lifetime_footprint_gib": 27.510105542838573,
+          "peak_sampled_rss_gib": 2.2431640625,
+          "pressure_levels": [
+            1
+          ],
+          "max_swap_used_bytes": 0,
+          "busy_samples": 0,
+          "running_busy_samples": 0,
+          "native_sha256": "25230c9a0a5b342c6a14313a06db0844f0e9cf3ce562ac5b8543a3edfd5449e4",
+          "mlx_sha256": "72dc8d9a4b1e07df2f6bc91383e0567acf3ce292398ae6ce4ed1d19fce0b1374",
+          "fixture_sha256": "1d0f237b528ceb1ca46464ebf57d37d9ad46bf3998d890a7e0dc9290c8ec6c4f",
+          "prep_sha256": "97217f819ed5f456f69315998aac2e44373ad73a318341823c4248669a482b59",
+          "global_subbatch_size": null,
+          "warm_repreparation_finite": true,
+          "warm_repreparation_policy": {
+            "total_residues": 406,
+            "global_subbatch_size": null,
+            "memory_status": "admitted",
+            "credited_retained_model_bytes": 372342784
+          },
+          "resize_repreparation_policy": {
+            "total_residues": 146,
+            "global_subbatch_size": null,
+            "memory_status": "admitted",
+            "credited_retained_model_bytes": 372342784
+          }
+        },
+        {
+          "name": "b2-retry",
+          "arm": "candidate",
+          "initial_fingerprint": "ed5c12c3135568cc9092da91b75bb98d1ee9b150a83853a68f047e6848a6f7a4",
+          "mean_seconds": 13.320623677000185,
+          "median_seconds": 13.255856375000121,
+          "samples_seconds": [
+            12.82862545800026,
+            12.864053332999902,
+            13.647659417000341,
+            13.942156500000237
+          ],
+          "first_call_seconds": 16.343566999999894,
+          "outputs": {
+            "original": [
+              "deebd07f304e4b1379708a06fae18001ec9dd76ac2bd4bf42d7b004d2a007902"
+            ],
+            "changed": [
+              "287b830b72133a55ac4a0daf68a81a471d69eb56f2c1d283ed443c0ab57c555d"
+            ]
+          },
+          "all_outputs_finite": true,
+          "peak_sampled_footprint_gib": 27.477924823760986,
+          "peak_lifetime_footprint_gib": 27.50944948196411,
+          "peak_sampled_rss_gib": 2.2437896728515625,
+          "pressure_levels": [
+            1
+          ],
+          "max_swap_used_bytes": 0,
+          "busy_samples": 1,
+          "running_busy_samples": 1,
+          "native_sha256": "25230c9a0a5b342c6a14313a06db0844f0e9cf3ce562ac5b8543a3edfd5449e4",
+          "mlx_sha256": "72dc8d9a4b1e07df2f6bc91383e0567acf3ce292398ae6ce4ed1d19fce0b1374",
+          "fixture_sha256": "1d0f237b528ceb1ca46464ebf57d37d9ad46bf3998d890a7e0dc9290c8ec6c4f",
+          "prep_sha256": "97217f819ed5f456f69315998aac2e44373ad73a318341823c4248669a482b59",
+          "global_subbatch_size": null,
+          "warm_repreparation_finite": null
+        }
+      ],
+      "matched_initial_state": true,
+      "matched_full_outputs": false,
+      "process_mean_seconds_by_arm": {
+        "baseline": [
+          39.33764974999997,
+          38.663607552000144
+        ],
+        "candidate": [
+          13.279367614750072,
+          13.320623677000185
+        ]
+      },
+      "baseline_mean_seconds": 39.000628651000056,
+      "candidate_mean_seconds": 13.299995645875129,
+      "speedup": 2.9323790540559873,
+      "time_reduction": 0.6589799676079301,
+      "quiet_process_subset": {
+        "process_mean_seconds_by_arm": {
+          "baseline": [
+            38.663607552000144
+          ],
+          "candidate": [
+            13.279367614750072
+          ]
+        },
+        "baseline_mean_seconds": 38.663607552000144,
+        "candidate_mean_seconds": 13.279367614750072,
+        "speedup": 2.91155487773789,
+        "time_reduction": 0.6565409061508254,
+        "note": "Exclude any process with a running CPU-contention sample from headline timing; aggregate GPU attribution and thermals remain uncontrolled"
+      }
+    }
+  },
+  "excluded_incomplete_run": {
+    "name": "compare-406/b2",
+    "reason": "Actual-turn proof expired; guard terminated only the owned child. Retried with actual-turn checks every 25 seconds. Partial timing excluded."
+  },
+  "date": "2026-10-28",
+  "base_commit": "056ff605371ce46174f2cffb7ea44e7337df4ee5",
+  "host": {
+    "chip": "Apple M5 Max",
+    "memory_bytes": 137438953472,
+    "macos": "27.0.1",
+    "architecture": "arm64"
+  },
+  "tests": {
+    "cpu_passed": 35,
+    "cpu_metal_skipped": 5,
+    "metal_passed": 5,
+    "pristine_preparation_copy_passed": 4
+  },
+  "numerical_differences": {
+    "original": {
+      "changed_arrays": 1,
+      "total_arrays": 33,
+      "differences": [
+        {
+          "field": "(DictKey(key='grad'), DictKey(key='seq'))",
+          "max_abs": 0.0385611355304718,
+          "relative_l2": 0.03950242590732088,
+          "cosine": 0.9993756420600731,
+          "angle_degrees": 2.0247762991853
+        }
+      ]
+    },
+    "changed": {
+      "changed_arrays": 1,
+      "total_arrays": 33,
+      "differences": [
+        {
+          "field": "(DictKey(key='grad'), DictKey(key='seq'))",
+          "max_abs": 0.007598757743835449,
+          "relative_l2": 0.015567152652279934,
+          "cosine": 0.999878867283623,
+          "angle_degrees": 0.8918108307851222
+        }
+      ]
+    }
+  },
+  "integrity": {
+    "status": "passed",
+    "installed_package_matches_tested_snapshot": true,
+    "verified_package_files": 98,
+    "record_matches": true,
+    "source_commit": "8fd167defd1b0f98e29f00584ff4f3987e6935dc",
+    "native_sha256": "25230c9a0a5b342c6a14313a06db0844f0e9cf3ce562ac5b8543a3edfd5449e4",
+    "mlx_sha256": "72dc8d9a4b1e07df2f6bc91383e0567acf3ce292398ae6ce4ed1d19fce0b1374",
+    "runtime_versions": {
+      "colabdesign": "1.1.3",
+      "metaljax": "0.11.9+fbc3",
+      "jax": "0.11.2",
+      "jaxlib": "0.11.2"
+    },
+    "repeated_process_outputs_identical_within_each_arm": true,
+    "own_gpu_processes_remaining": [],
+    "validation_harness_sha256": {
+      "probe.py": "9c221fac6e952df84f24568eeefbf312d57f3458e2c16b850169222669300b46",
+      "guard_validation.py": "e39e7ec6cd9c5548ca8601441351673b6e8c454ed1d63f0c2865a1f5fb376a52",
+      "sync_all.cc": "dd62d8d69a04ed778f504db07ea448ad6b9191301ccb8a560b49ebd3bf67e1a0",
+      "libsync_all.dylib": "603b03d6ccbd858c5378b629846defa1dde347ec48bd8e964f1484ea1408ffb2"
+    }
+  },
+  "archived_unchunked_gradient_parity": {
+    "original": {
+      "gradient_exact_to_archived_unchunked": true,
+      "max_abs": 0.0
+    },
+    "changed": {
+      "gradient_exact_to_archived_unchunked": true,
+      "max_abs": 0.0
+    }
+  }
+}
