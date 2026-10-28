@@ -169,21 +169,12 @@ installation never follows a moving upstream branch.
 
 ### Unchunked model preparation
 
-The Apple installer also applies a pinned ColabDesign preparation patch. Metal
-uses an unchunked configuration for both forward and gradient callables,
-including models above the dependency's previous 384-residue cutoff. CPU/CUDA
-preparation behavior and the published MetalJAX wheel are unchanged.
-
-A memory preflight checks the attention buffer size and an empirical model
-working-set estimate before preparing new callables. It accounts for verified
-resident model memory during reuse and reports uncertain ownership explicitly.
-Insufficient estimated headroom raises `MemoryError`; native runtime memory
-and pressure guards remain active. Admission is not a peak-memory guarantee.
-The empirical calibration comes from one 406-residue BF16 multimer fixture;
-other model sizes, modes and devices need application validation.
-
-See the [preparation patch and validation](installation/colabdesign-metal/README.md)
-for scope, measurements and remaining draft qualification.
+Metal runs unchunked by default to avoid the overhead of ColabDesign's small
+sub-batches on larger jobs. This gave about 3× faster recycles in the 406-residue
+test, using ~27.5 GiB versus ~18 GiB with chunking; the 146-residue ubiquitin
+example uses ~6.9 GiB. Set `FREEBINDCRAFT_METAL_CHUNKING=1` before launching a job
+to restore chunking above 384 total residues when memory is limited. See the
+[chunking policy](installation/colabdesign-metal/README.md) for details.
 
 ## Verify the installation
 

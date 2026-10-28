@@ -2,15 +2,15 @@
   "repository": "https://github.com/sokrypton/ColabDesign.git",
   "source_commit": "8fd167defd1b0f98e29f00584ff4f3987e6935dc",
   "patch": "unchunked-preparation.patch",
-  "patch_sha256": "ca4d4e68195cac887a915c0b5a8a9acbf44aaf9d08cfec0e8d60cd317f793c73",
+  "patch_sha256": "0fa06a1be89bc2c1dec337d7e397b26d0816ec496dbf72f439fcde37cc2e6d3c",
   "files": {
     "af/prep.py": {
       "before": "b2ebf1ccb2c8f8fd0cb65871fbc307f65fc32d582ffe2547f118c1102de6df38",
-      "after": "97217f819ed5f456f69315998aac2e44373ad73a318341823c4248669a482b59"
+      "after": "99b63607fd5b3966a9be4897d5d4c42d17679eb60cd38ad8eb00b027d84a1cbf"
     },
     "af/metal_execution_policy.py": {
       "before": null,
-      "after": "0f92589d41cbce8590867106e41bce955fc454a113076a929f7fdf50b972a1b5",
+      "after": "cabe1af51d75fbf5cba9a3f2949b74d258b830e01d27efad2a874e9a953d5676",
       "payload": "metal_execution_policy.py"
     }
   }

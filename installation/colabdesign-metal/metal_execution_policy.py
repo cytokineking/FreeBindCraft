@@ -14,7 +14,8 @@ def select_global_policy(global_config, total_residues, backend):
     total_residues = int(total_residues)
     if total_residues <= 0:
         raise ValueError('The model must contain at least one residue')
-    desired = None if backend == 'metal' or total_residues <= 384 else 4
+    chunking = backend != 'metal' or os.environ.get('FREEBINDCRAFT_METAL_CHUNKING') == '1'
+    desired = 4 if chunking and total_residues > 384 else None
     changed = global_config.subbatch_size != desired
     global_config.subbatch_size = desired
     return changed, {

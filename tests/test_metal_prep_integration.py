@@ -23,6 +23,9 @@ class Config(dict):
 
 class PrepIntegrationTests(unittest.TestCase):
     def setUp(self):
+        environment = patch.dict(os.environ, {'FREEBINDCRAFT_METAL_CHUNKING': '0'})
+        environment.start()
+        self.addCleanup(environment.stop)
         helper_path = Path(__file__).resolve().parents[1] / 'installation/colabdesign-metal/metal_execution_policy.py'
         spec = importlib.util.spec_from_file_location('policy_under_test', helper_path)
         self.helper = importlib.util.module_from_spec(spec)
@@ -118,6 +121,30 @@ class PrepIntegrationTests(unittest.TestCase):
         self.assertIsNot(self.model._cfg, original)
         self.assertIsNone(self.model._cfg.model.global_config.subbatch_size)
         self.assertEqual(original.model.global_config.subbatch_size, 4)
+
+    def test_chunking_opt_in_updates_both_callables_and_can_be_disabled(self):
+        with patch.dict(os.environ, {'FREEBINDCRAFT_METAL_CHUNKING': '1'}), \
+             patch.object(self.helper, 'current_metal_memory', side_effect=AssertionError('Unchunked estimate must not reject chunked jobs')):
+            self.model._prep_model()
+            self.assertEqual(self.model._model['fn'], ('forward', 4))
+            self.assertEqual(self.model._model['grad_fn'], ('gradient', 4))
+            self.assertEqual(self.model.get_execution_policy()['memory']['status'], 'native_guards_only')
+        with patch.object(self.helper, 'current_metal_memory', return_value={'status': 'admitted'}):
+            self.model._prep_model()
+            self.assertEqual(self.model._model['fn'], ('forward', None))
+            self.assertEqual(self.model._model['grad_fn'], ('gradient', None))
+        self.assertEqual(self.build_sizes, [4, None])
+
+    def test_chunking_opt_in_keeps_small_jobs_unchunked_on_model_reuse(self):
+        with patch.dict(os.environ, {'FREEBINDCRAFT_METAL_CHUNKING': '1'}), \
+             patch.object(self.helper, 'current_metal_memory', return_value={'status': 'admitted'}) as memory:
+            for length, expected in ((384, None), (385, 4), (406, 4), (146, None)):
+                self.model._lengths = [length]
+                self.model._prep_model()
+                self.assertEqual(self.model._model['fn'], ('forward', expected))
+                self.assertEqual(self.model._model['grad_fn'], ('gradient', expected))
+            self.assertEqual(memory.call_count, 2)
+            self.assertEqual(self.build_sizes, [None, 4, None])
 
     def test_nonmetal_preserves_pinned_callable_selection(self):
         with patch.object(self.helper, 'current_metal_memory', side_effect=AssertionError('Metal-only preflight')):

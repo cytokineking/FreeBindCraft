@@ -6,6 +6,7 @@ import os
 import sys
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 import numpy as np
 
 path = Path(__file__).resolve().parents[1] / 'installation/colabdesign-metal/metal_execution_policy.py'
@@ -20,6 +21,11 @@ class Config(dict):
 
 
 class MetalExecutionPolicyTests(unittest.TestCase):
+    def setUp(self):
+        environment = patch.dict(os.environ, {'FREEBINDCRAFT_METAL_CHUNKING': '0'})
+        environment.start()
+        self.addCleanup(environment.stop)
+
     def test_metal_is_unchunked_at_and_above_old_boundary(self):
         for length in (128, 383, 384, 385, 406):
             with self.subTest(length=length):
@@ -36,6 +42,15 @@ class MetalExecutionPolicyTests(unittest.TestCase):
                 with self.subTest(backend=backend, length=length):
                     config = Config(subbatch_size=None)
                     _, route = policy.select_global_policy(config, length, backend)
+                    self.assertEqual(config.subbatch_size, expected)
+                    self.assertEqual(route['global_subbatch_size'], expected)
+
+    def test_chunking_opt_in_restores_original_size_cutoff(self):
+        with patch.dict(os.environ, {'FREEBINDCRAFT_METAL_CHUNKING': '1'}):
+            for length, expected in ((146, None), (384, None), (385, 4), (406, 4)):
+                with self.subTest(length=length):
+                    config = Config(subbatch_size=None)
+                    _, route = policy.select_global_policy(config, length, 'metal')
                     self.assertEqual(config.subbatch_size, expected)
                     self.assertEqual(route['global_subbatch_size'], expected)
 
