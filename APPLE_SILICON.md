@@ -167,6 +167,24 @@ and maintainer build instructions](installation/metaljax/README.md). Future
 upgrades require a new reviewed source commit, versioned artifact and checksum;
 installation never follows a moving upstream branch.
 
+### Unchunked model preparation
+
+Metal runs unchunked by default to avoid the overhead of ColabDesign's small
+sub-batches on larger jobs. This gave about 3× faster recycles in the 406-residue
+test, using ~27.5 GiB versus ~18 GiB with chunking; the 146-residue ubiquitin
+example uses ~6.9 GiB.
+
+Apple Silicon and CUDA use different chunking defaults. CUDA retains four-residue
+sub-batches above 384 total target-plus-binder residues, while Apple Silicon runs
+unchunked for speed. Consequently, memory requirements grow differently with
+sequence length; CUDA memory figures should not be used directly to estimate Mac
+memory requirements. The ~27.5 GiB unchunked versus ~18 GiB chunked comparison
+measures both policies on the same M5 Max.
+
+Set `FREEBINDCRAFT_METAL_CHUNKING=1` before launching a job to restore chunking
+above 384 total residues when memory is limited. See the
+[chunking policy](installation/colabdesign-metal/README.md) for details.
+
 ## Verify the installation
 
 Run the Metal alignment tests and native OpenMM/DSSP/ProteinMPNN check:

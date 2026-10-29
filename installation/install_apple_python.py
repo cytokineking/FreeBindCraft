@@ -92,6 +92,7 @@ def main():
     wanted = '0.11.9' if mode == 'stock' else release['version']
     if mode != 'local override' and report['metaljax'] != wanted:
         raise RuntimeError(f'Unexpected MetalJAX version after sync: {report}')
+    subprocess.run([str(python), str(root/'installation/apply_colabdesign_metal.py')], check=True)
     print(f"Installed MetalJAX {report['metaljax']} ({mode}); JAX {report['jax']}, jaxlib {report['jaxlib']}", flush=True)
 
 

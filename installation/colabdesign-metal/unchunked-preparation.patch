@@ -1,0 +1,76 @@
+--- a/colabdesign/af/prep.py
++++ b/colabdesign/af/prep.py
+@@ -23,16 +23,64 @@
+ class _af_prep:
+ 
+   def _prep_model(self, **kwargs):
+-    '''prep model'''
+-    if not hasattr(self,"_model") or self._cfg != self._model["runner"].config:
+-      self._cfg.model.global_config.subbatch_size = None
+-      self._model = self._get_model(self._cfg)
+-      if sum(self._lengths) > 384:
+-        self._cfg.model.global_config.subbatch_size = 4
+-        self._model["fn"] = self._get_model(self._cfg)["fn"]
+-
+-    self._opt = copy_dict(self.opt)  
++    """Select the Metal chunking policy before tracing either callable."""
++    backend = jax.default_backend()
++    if backend == "metal":
++      import copy
++      from colabdesign.af.metal_execution_policy import select_global_policy, current_metal_memory
++      # The runner may alias self._cfg. Commit a private configuration only
++      # after memory admission and construction of both callables succeed.
++      cfg = copy.deepcopy(self._cfg)
++      global_config = cfg.model.global_config
++      total_residues = sum(self._lengths)
++      changed, policy = select_global_policy(global_config, total_residues, backend)
++      if global_config.subbatch_size is None:
++        heads = cfg.model.embeddings_and_evoformer.evoformer.triangle_attention_starting_node.num_head
++        try:
++          stats = jax.devices()[0].memory_stats() or {}
++        except (AttributeError, NotImplementedError, RuntimeError):
++          stats = {}
++        memory = current_metal_memory(
++            total_residues, heads, 2 if global_config.bfloat16 else 4,
++            device_limit_bytes=stats.get("bytes_limit"),
++            device_used_bytes=stats.get("bytes_in_use"),
++            reported_device_cache_bytes=(max(0, stats["bytes_reserved"] - stats["bytes_in_use"])
++                if stats.get("bytes_reserved") is not None and stats.get("bytes_in_use") is not None else None),
++            model_params=(getattr(self, "_model_params", None)
++                if getattr(self, "_execution_policy", None) is not None else None),
++            rematerialization=global_config.get("use_remat", True),
++            recycles=self.opt.get("num_recycles", cfg.model.num_recycle),
++            recycle_mode=self._args.get("recycle_mode", "last"),
++            model_kind="multimer" if self._args.get("use_multimer", False) else "monomer")
++      else:
++        # The unchunked working-set estimate does not apply to chunked jobs.
++        memory = {"status": "native_guards_only"}
++      current = getattr(self, "_model", None)
++      if current is None or changed or cfg != current["runner"].config:
++        prepared = self._get_model(cfg)
++        if prepared["runner"].config.model.global_config.subbatch_size != policy["global_subbatch_size"]:
++          raise RuntimeError("Prepared Metal model does not match the selected chunking policy")
++        self._cfg, self._model = cfg, prepared
++      self._execution_policy = dict(policy, memory=memory)
++    else:
++      # Preserve the pinned dependency's CPU/CUDA preparation behavior.
++      if not hasattr(self,"_model") or self._cfg != self._model["runner"].config:
++        self._cfg.model.global_config.subbatch_size = None
++        self._model = self._get_model(self._cfg)
++        if sum(self._lengths) > 384:
++          self._cfg.model.global_config.subbatch_size = 4
++          self._model["fn"] = self._get_model(self._cfg)["fn"]
++      self._execution_policy = {
++          "backend": backend, "total_residues": int(sum(self._lengths)),
++          "global_subbatch_size": self._cfg.model.global_config.subbatch_size}
++
++    self._opt = copy_dict(self.opt)
+     self.restart(**kwargs)
++
++  def get_execution_policy(self):
++    """Return a copy of the current preparation policy and memory estimate."""
++    import copy
++    return copy.deepcopy(self._execution_policy)
+ 
+   def _prep_features(self, num_res, num_seq=None, num_templates=1):
+     '''process features'''

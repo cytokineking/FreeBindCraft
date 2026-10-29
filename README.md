@@ -103,6 +103,13 @@ uses the CPU. Apple Command Line Tools are required; the remaining tools install
 inside the checkout. See the [Apple Silicon guide](APPLE_SILICON.md) for setup,
 examples, and tested performance.
 
+Apple Silicon disables ColabDesign's size-based chunking by default to avoid
+severe Metal slowdowns: about 3× faster recycles in the tested 406-residue case,
+with higher memory use for larger targets (~27.5 GiB versus ~18 GiB chunked).
+The 76-residue ubiquitin + 70-aa binder example uses ~6.9 GiB. Set
+`FREEBINDCRAFT_METAL_CHUNKING=1` to restore chunking when memory is limited;
+see the [chunking policy](installation/colabdesign-metal/README.md).
+
 ## Running BindCraft
 
 Activate the Conda environment:

@@ -1,0 +1,2 @@
+# Preserve literal upstream whitespace inside the patch.
+*.patch whitespace=-blank-at-eol
