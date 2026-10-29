@@ -2,7 +2,7 @@
 
 Apple's jax-metal lacks eigh/SVD; metaljax otherwise uses host LAPACK for them.
 Use cyclic Jacobi rotations for the 4x4 symmetric quaternion problem instead;
-all arithmetic stays on the GPU. See APPLE_SILICON.md for scope and validation.
+all arithmetic stays on the GPU. See apple_silicon/README.md for setup and usage.
 The rest of ColabDesign, including the AlphaFold model and losses, is unchanged.
 """
 import jax

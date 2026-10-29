@@ -85,11 +85,9 @@ Omit `--no-pyrosetta` from that check for a full installation. Installing with `
 
 You can also run BindCraft entirely inside a Docker container without a local installation. See the Containerized usage section below for details and an interactive wrapper.
 
-### Apple Silicon (experimental)
+### Apple Silicon
 
-FreeBindCraft can run natively on Apple Silicon Macs, using the Apple GPU for
-AlphaFold and ProteinMPNN. The unified installer selects macOS automatically
-and includes native PyRosetta by default:
+FreeBindCraft runs natively on Apple Silicon, with GPU optimizations enabled by default.
 
 ```bash
 bash install_bindcraft.sh
@@ -97,18 +95,9 @@ bash install_bindcraft.sh
   --advanced settings_advanced/apple_silicon_ubiquitin_small.json --max-attempts 1
 ```
 
-Add `--no-pyrosetta` to the installation command to omit it, or to the run command
-to select OpenMM/OpenCL relaxation in a full installation. Rosetta relaxation
-uses the CPU. Apple Command Line Tools are required; the remaining tools install
-inside the checkout. See the [Apple Silicon guide](APPLE_SILICON.md) for setup,
-examples, and tested performance.
-
-Apple Silicon disables ColabDesign's size-based chunking by default to avoid
-severe Metal slowdowns: about 3× faster recycles in the tested 406-residue case,
-with higher memory use for larger targets (~27.5 GiB versus ~18 GiB chunked).
-The 76-residue ubiquitin + 70-aa binder example uses ~6.9 GiB. Set
-`FREEBINDCRAFT_METAL_CHUNKING=1` to restore chunking when memory is limited;
-see the [chunking policy](installation/colabdesign-metal/README.md).
+PyRosetta is included by default; use `--no-pyrosetta` for OpenMM/FASPR.
+See the [Apple Silicon guide](apple_silicon/README.md) for setup and memory options,
+and the [M5 Max versus NVIDIA benchmarks](apple_silicon/benchmarks/README.md).
 
 ## Running BindCraft
 
