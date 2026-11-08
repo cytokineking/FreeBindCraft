@@ -51,7 +51,9 @@ class AppleLauncherTests(unittest.TestCase):
                     completed.stdout)
 
     def test_defaults_opt_out_precedence_and_forwarding(self):
-        forwarded = ['--settings', 'path with spaces/target.json', '--seed', '42']
+        forwarded = ['--settings', 'path with spaces/target.json', '--seed', '42',
+                     '--trajectory-cache', '--attempts-per-length', '12',
+                     '--accepted-per-length', '3']
         cases = [
             # Arguments, inherited setting, PyRosetta availability, expected setting.
             ([], None, True, None),
