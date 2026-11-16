@@ -154,7 +154,9 @@ You can further control runtime behavior with these flags:
 - `--no-plots`: Disable saving design trajectory plots (overrides advanced settings).
 - `--no-animations`: Disable saving trajectory animations (overrides advanced settings).
 - `--rank-by {i_pTM,ipSAE}`: Metric to rank final designs by (default: `i_pTM`). Use `ipSAE` to rank by interface predicted Structural Alignment Error instead.
-- `--max-attempts N`: Stop after starting N trajectories, including rejected trajectories. Useful for a bounded local trial.
+- `--max-attempts N`: Run at most N new trajectory attempts across all lengths, including rejected trajectories. The last attempt finishes its downstream processing, then accepted designs are ranked using `--rank-by`, even if the requested design count was not reached. This works with caching on or off, defaults to no attempt cap, and resets for each invocation when resuming.
+- `--attempts-per-length N`: With the trajectory cache enabled, try up to N trajectories at each selected length per visit (default: 5), including the first attempt.
+- `--accepted-per-length N`: With the trajectory cache enabled, move to the next length after a visit reaches N final-filter-accepted designs (default: 1), or its attempt limit.
 - `--seed N`: Seed NumPy's trajectory and model sampling for reproducible checks within a pinned runtime. OpenMM MD and different GPU backends need not be bitwise reproducible.
 
 Example:
@@ -165,6 +167,35 @@ python -u ./bindcraft.py \
   --advanced './settings_advanced/default_4stage_multimer.json' \
   --no-animations --no-plots --verbose --rank-by ipSAE
 ```
+
+### Exact-length trajectory cache
+
+Add `--trajectory-cache` to reuse compiled design calculations on CUDA or Apple Silicon, inspired by [BindCraft2](https://github.com/PacesaLab/BindCraft2/blob/8c1a858fdc1bfc94c60846ff11a0d01c9aa44136/bindcraft/af2.py#L461-L469). Caching is **off by default**. You can also enable it with `"trajectory_cache": true` in the advanced JSON; `--no-trajectory-cache` overrides that setting for a single run.
+
+Use `--attempts-per-length N` to set the maximum number of attempts per selected length and visit. Use `--accepted-per-length N` to set how many accepted designs end that visit. For example, `--trajectory-cache --attempts-per-length 5 --accepted-per-length 3` moves on after three accepted designs or five attempts, whichever happens first. You can set both values to 5 to target five accepted designs within five attempts. Both values must be positive integers; `--max-attempts` remains a separate limit on all new trajectories in the run.
+
+With caching enabled:
+
+- The length range is divided into up to four bins. FreeBindCraft alternates between bins, running a block of trajectories at one exact length before moving on.
+- Each visit attempts at most the configured number of trajectories at its selected length, ending when the accepted-design target is reached. Only designs that pass the final filters count; earlier confidence checks do not. The configured MPNN output limit and overall design goal still apply.
+- The accepted-design target is checked after each trajectory completes. If a trajectory produces multiple accepted designs, all count and the visit can exceed its target; the existing per-trajectory MPNN limit still applies.
+- Each bin starts at its midpoint, then explores unvisited lengths furthest from previous visits. Sweeps continue until the design goal or a stopping limit is reached. For 65–200 with a goal of 20 designs, the block order begins **82 → 116 → 150 → 184 → 65 → 99 → 133 → 167**.
+- The first trajectory at a new length compiles; subsequent trajectories reuse those calculations with fresh seeds and optimizer state. Changing length releases the old runtime and clears JAX compilation caches. There is no padding or scheduling worker process.
+
+For example, with the default settings, a visit to length 82 advances to 116 after five unsuccessful attempts, or after a trajectory produces at least one final-filter-accepted design.
+
+Resume preserves bins, visited lengths and partial visits when campaign settings and accepted files are unchanged. If either limit changes, the current visit is evaluated against the new limits: raising a limit can continue a visit, while lowering one can end it immediately. Older checkpoints are migrated to the selected limits. With caching off, lengths are sampled independently as before, and these two options have no effect. Caching can increase peak memory during validation, and allocators may retain freed memory for reuse.
+
+**Design-only measurements at one repeated length:**
+
+| Backend | First call, off → on | Later calls, off → on | Five-call mean, off → on |
+|---|---:|---:|---:|
+| NVIDIA RTX 6000 Pro | 89.65 → 89.21 s (1.00×) | 89.15 → 11.96 s (7.46×) | 89.25 → 27.41 s (3.26×) |
+| NVIDIA RTX 5090 | 89.18 → 88.85 s (1.00×) | 88.68 → 13.68 s (6.48×) | 88.78 → 28.72 s (3.09×) |
+| NVIDIA L40S | 173.58 → 179.50 s (0.97×) | 174.32 → 24.59 s (7.09×) | 174.18 → 55.57 s (3.13×) |
+| Apple M5 Max | 91.16 → 93.18 s (0.98×) | 92.60 → 88.13 s (1.05×) | 92.31 → 89.14 s (1.04×) |
+
+Each result averages two opposite-order pairs of five-call blocks on ubiquitin with a 100-residue binder and one repeated seed. These are complete calls to the production three-stage design function with a **shortened 20/10/3-iteration schedule**, not the default four-stage schedule. The first call includes model setup and compilation; the later-call mean covers four calls per block. Timings include trajectory output but exclude relaxation, MPNN and validation. Outputs matched within each backend. CUDA used JAX 0.6.0 with autotuning disabled; Metal used JAX 0.11.2 and MetalJAX 0.11.9+fbc3. Persistent compilation caching was disabled. Results are workload-specific; the small Metal difference is not a general performance guarantee.
 
 ## Containerized usage (Docker)
 

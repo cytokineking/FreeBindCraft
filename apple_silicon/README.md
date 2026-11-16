@@ -44,6 +44,8 @@ Add `--no-pyrosetta` to a run command to select OpenMM/FASPR. The launcher selec
 
 On the M5 Max, the small benchmark takes about four minutes and uses about 8 GiB of memory. The larger CA2 benchmark takes about 33 minutes and uses about 29 GiB. See the [NVIDIA comparison and time breakdowns](benchmarks/README.md).
 
+For repeated seeds at interleaved exact binder lengths, the launcher accepts `--trajectory-cache`, `--attempts-per-length N` (default 5 attempts per visit), and `--accepted-per-length N` (default 1 accepted design per visit). See [usage, scheduling and design speedups](../README.md#exact-length-trajectory-cache).
+
 The default favors speed by running without chunking. For lower memory use on targets plus binders exceeding 384 residues, set `FREEBINDCRAFT_METAL_CHUNKING=1` before your run command. This processes smaller batches and runs more slowly. Leave memory available for macOS and other applications.
 
 <details>

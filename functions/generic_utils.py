@@ -143,20 +143,24 @@ def check_n_trajectories(design_paths, advanced_settings):
         return False
 
 # Check if we have required number of accepted targets, rank them, and analyse sequence and structure properties
-def check_accepted_designs(design_paths, mpnn_csv, final_labels, final_csv, advanced_settings, target_settings, design_labels, rank_by='Average_i_pTM'):
+def check_accepted_designs(design_paths, mpnn_csv, final_labels, final_csv, advanced_settings, target_settings, design_labels, rank_by='Average_i_pTM', *, finalize=False):
+    """Rank on goal completion or explicit finalization; return whether the goal is met."""
     t0 = time.time()
     accepted_binders = [f for f in os.listdir(design_paths["Accepted"]) if f.endswith('.pdb') and not f.startswith('.')]
 
-    if len(accepted_binders) >= target_settings["number_of_final_designs"]:
-        print(f"Target number {str(len(accepted_binders))} of designs reached! Reranking by {rank_by}...")
+    goal_reached = len(accepted_binders) >= target_settings["number_of_final_designs"]
+    if goal_reached or finalize:
+        print(f"Ranking {len(accepted_binders)} accepted designs by {rank_by}...")
 
         # clear the Ranked folder in case we added new designs in the meantime so we rerank them all
         for f in os.listdir(design_paths["Accepted/Ranked"]):
             os.remove(os.path.join(design_paths["Accepted/Ranked"], f))
 
         # load dataframe of designed binders
-        design_df = pd.read_csv(mpnn_csv)
-        design_df = design_df.sort_values(rank_by, ascending=False)
+        if accepted_binders:
+            design_df = pd.read_csv(mpnn_csv).sort_values(rank_by, ascending=False)
+        else:
+            design_df = pd.DataFrame(columns=design_labels)
         
         # create final csv dataframe to copy matched rows, initialize with the column labels
         final_df = pd.DataFrame(columns=final_labels)
@@ -165,13 +169,13 @@ def check_accepted_designs(design_paths, mpnn_csv, final_labels, final_csv, adva
         rank = 1
         for _, row in design_df.iterrows():
             for binder in accepted_binders:
-                target_settings["binder_name"], model = binder.rsplit('_model', 1)
-                if target_settings["binder_name"] == row['Design']:
+                binder_name, model = binder.rsplit('_model', 1)
+                if binder_name == row['Design']:
                     # rank and copy into ranked folder
                     row_data = {'Rank': rank, **{label: row[label] for label in design_labels}}
                     final_df = pd.concat([final_df, pd.DataFrame([row_data])], ignore_index=True)
                     old_path = os.path.join(design_paths["Accepted"], binder)
-                    new_path = os.path.join(design_paths["Accepted/Ranked"], f"{rank}_{target_settings['binder_name']}_model{model.rsplit('.', 1)[0]}.pdb")
+                    new_path = os.path.join(design_paths["Accepted/Ranked"], f"{rank}_{binder_name}_model{model.rsplit('.', 1)[0]}.pdb")
                     shutil.copyfile(old_path, new_path)
 
                     rank += 1
@@ -182,13 +186,13 @@ def check_accepted_designs(design_paths, mpnn_csv, final_labels, final_csv, adva
         vprint(f"[GenUtils] Reranking and final CSV write in {time.time()-t0:.2f}s")
 
         # zip large folders to save space
-        if advanced_settings["zip_animations"]:
+        if goal_reached and advanced_settings["zip_animations"]:
             zip_and_empty_folder(design_paths["Trajectory/Animation"], '.html')
 
-        if advanced_settings["zip_plots"]:
+        if goal_reached and advanced_settings["zip_plots"]:
             zip_and_empty_folder(design_paths["Trajectory/Plots"], '.png')
 
-        return True
+        return goal_reached
 
     else:
         vprint(f"[GenUtils] Accepted count below target; check in {time.time()-t0:.2f}s")

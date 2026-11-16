@@ -6,10 +6,17 @@ import gc
 from functions import *
 from functions.generic_utils import insert_data # Explicit import for insert_data
 from functions.biopython_utils import clear_dssp_cache # Explicit import for DSSP cache management
+from functions.trajectory_scheduler import (
+    DEFAULT_TRAJECTORY_ACCEPTED_DESIGNS,
+    DEFAULT_TRAJECTORY_REPEATS,
+    TrajectoryScheduleCheckpoint,
+    scheduling_identity,
+)
 import logging
 import os
 import sys
 import subprocess
+import warnings
 try:
     import resource  # POSIX-only; used to raise RLIMIT_NOFILE (ulimit -n)
 except Exception:
@@ -78,6 +85,12 @@ parser.add_argument('--no-pyrosetta', action='store_true',
                     help='Use OpenMM relaxation and open-source scoring instead of PyRosetta')
 parser.add_argument('--max-attempts', type=int, default=None,
                     help='Stop after this many new trajectories, including rejected ones')
+parser.add_argument('--trajectory-cache', action=argparse.BooleanOptionalAction, default=None,
+                    help='Reuse a compiled design runtime within exact-length blocks (default off)')
+parser.add_argument('--attempts-per-length', type=int, default=DEFAULT_TRAJECTORY_REPEATS,
+                    help='Maximum trajectory attempts per cached length visit, including the first (default: 5)')
+parser.add_argument('--accepted-per-length', type=int, default=DEFAULT_TRAJECTORY_ACCEPTED_DESIGNS,
+                    help='Accepted-design target per cached length visit (default: 1; checked after each trajectory)')
 parser.add_argument('--seed', type=int, default=None,
                     help='Seed trajectory length/model sampling for reproducible local checks')
 parser.add_argument('--verbose', action='store_true',
@@ -97,6 +110,10 @@ parser.add_argument('--rank-by', type=str, default='i_pTM',
 args = parser.parse_args()
 if args.max_attempts is not None and args.max_attempts < 1:
     parser.error('--max-attempts must be positive')
+if args.attempts_per_length < 1:
+    parser.error('--attempts-per-length must be positive')
+if args.accepted_per_length < 1:
+    parser.error('--accepted-per-length must be positive')
 if args.seed is not None:
     np.random.seed(args.seed)
 
@@ -382,6 +399,12 @@ check_jax_gpu()
 ### load settings from JSON
 target_settings, advanced_settings, filters = load_json_settings(settings_path, filters_path, advanced_path)
 
+cache_enabled = args.trajectory_cache
+if cache_enabled is None:
+    cache_enabled = advanced_settings.get("trajectory_cache", False)
+if type(cache_enabled) is not bool:
+    parser.error('trajectory_cache must be true or false')
+
 settings_file = os.path.basename(settings_path).split('.')[0]
 filters_file = os.path.basename(filters_path).split('.')[0]
 advanced_file = os.path.basename(advanced_path).split('.')[0]
@@ -483,9 +506,23 @@ script_start_time = time.time()
 trajectory_n = 1
 accepted_designs = 0
 attempted_trajectories = 0
+trajectory_runtime = TrajectoryDesignRuntime() if cache_enabled else None
+length_scheduler = None
+schedule_checkpoint = None
+schedule_identity = scheduling_identity(target_settings, advanced_settings, filters) if cache_enabled else None
+schedule_path = os.path.join(target_settings["design_path"], '.trajectory-schedule.json')
+
+def accepted_output_names():
+    # Match check_accepted_designs, including results from an earlier run.
+    return {name for name in os.listdir(design_paths["Accepted"])
+            if name.endswith('.pdb') and not name.startswith('.')}
 
 ### start design loop
 while True:
+    if schedule_checkpoint is not None and schedule_checkpoint.inflight is not None:
+        if not schedule_checkpoint.finish_attempt(accepted_output_names()):
+            schedule_checkpoint = length_scheduler = None
+
     ### check if we have the target number of binders
     # Map CLI metric name to CSV column name (e.g., 'i_pTM' -> 'Average_i_pTM')
     rank_by_column = f"Average_{args.rank_by}"
@@ -495,9 +532,12 @@ while True:
         # stop design loop execution
         break
 
-    # Finalize accepted designs before stopping at the attempt limit.
+    # Rank partial results even when the accepted-design goal is not yet met.
     if args.max_attempts is not None and attempted_trajectories >= args.max_attempts:
         print(f"Attempt limit of {args.max_attempts} reached, stopping execution.")
+        check_accepted_designs(design_paths, mpnn_csv, final_labels, final_csv,
+                               advanced_settings, target_settings, design_labels,
+                               rank_by=rank_by_column, finalize=True)
         break
 
     ### check if we reached maximum allowed trajectories
@@ -513,9 +553,31 @@ while True:
     # generate random seed to vary designs
     seed = int(np.random.randint(0, high=999999, size=1, dtype=int)[0])
 
-    # sample binder design length randomly from defined distribution
-    samples = np.arange(min(target_settings["lengths"]), max(target_settings["lengths"]) + 1)
-    length = np.random.choice(samples)
+    if cache_enabled:
+        accepted_names = accepted_output_names()
+        remaining_designs = target_settings["number_of_final_designs"] - len(accepted_names)
+        if remaining_designs <= 0:
+            continue  # Recheck and finalize if accepted files changed meanwhile.
+        remaining_attempts = None if args.max_attempts is None else args.max_attempts - attempted_trajectories
+        if schedule_checkpoint is not None and accepted_names != schedule_checkpoint.accepted:
+            warnings.warn('Accepted files changed outside the current attempt; starting fresh trajectory scheduling history.', RuntimeWarning)
+            schedule_checkpoint = length_scheduler = None
+        if length_scheduler is None:
+            schedule_checkpoint = TrajectoryScheduleCheckpoint(schedule_path, schedule_identity,
+                min(target_settings["lengths"]), max(target_settings["lengths"]),
+                remaining_designs, remaining_attempts, accepted_names,
+                attempts_per_visit=args.attempts_per_length,
+                accepted_per_visit=args.accepted_per_length)
+            length_scheduler = schedule_checkpoint.scheduler
+        previous_block = length_scheduler.current
+        length = length_scheduler.next_length(remaining_designs, remaining_attempts)
+        if length_scheduler.current is not previous_block:
+            print(f"Length block: {length} residues; up to {args.attempts_per_length} attempts, "
+                  f"targeting {args.accepted_per_length} accepted designs")
+    else:
+        # Preserve the original independent length sampling when caching is off.
+        samples = np.arange(min(target_settings["lengths"]), max(target_settings["lengths"]) + 1)
+        length = np.random.choice(samples)
 
     # load desired helicity value to sample different secondary structure contents
     helicity_value = load_helicity(advanced_settings)
@@ -526,13 +588,18 @@ while True:
     trajectory_exists = any(os.path.exists(os.path.join(design_paths[trajectory_dir], design_name + ".pdb")) for trajectory_dir in trajectory_dirs)
 
     if not trajectory_exists:
+        if length_scheduler is not None:
+            if not schedule_checkpoint.begin_attempt(design_name, accepted_output_names()):
+                warnings.warn('Accepted files changed before the attempt; starting fresh trajectory scheduling history.', RuntimeWarning)
+                schedule_checkpoint = length_scheduler = None
+                continue
         attempted_trajectories += 1
         print("Starting trajectory: "+design_name)
 
         ### Begin binder hallucination
         trajectory = binder_hallucination(design_name, target_settings["starting_pdb"], target_settings["chains"],
                                             target_settings["target_hotspot_residues"], length, seed, helicity_value,
-                                            design_models, advanced_settings, design_paths, failure_csv)
+                                            design_models, advanced_settings, design_paths, failure_csv, runtime=trajectory_runtime)
         trajectory_metrics = copy_dict(trajectory._tmp["best"]["aux"]["log"]) # contains plddt, ptm, i_ptm, pae, i_pae
         trajectory_pdb = os.path.join(design_paths["Trajectory"], design_name + ".pdb")
 
@@ -546,7 +613,14 @@ while True:
         print("")
 
         # Proceed if there is no trajectory termination signal
-        if trajectory.aux["log"]["terminate"] == "":
+        terminated = trajectory.aux["log"]["terminate"]
+        if not terminated:
+            trajectory_sequence = trajectory.get_seq(get_best=True)[0]
+        if trajectory_runtime is not None:
+            trajectory_runtime.release_outputs()
+        del trajectory
+
+        if not terminated:
             # Relax binder to calculate statistics
             trajectory_relaxed = os.path.join(design_paths["Trajectory/Relaxed"], design_name + ".pdb")
             pr_relax(trajectory_pdb, trajectory_relaxed, use_pyrosetta=use_pyrosetta)
@@ -563,9 +637,6 @@ while True:
 
             # analyze interface scores for relaxed af2 trajectory
             trajectory_interface_scores, trajectory_interface_AA, trajectory_interface_residues = score_interface(trajectory_relaxed, binder_chain, use_pyrosetta=use_pyrosetta)
-
-            # starting binder sequence
-            trajectory_sequence = trajectory.get_seq(get_best=True)[0]
 
             # analyze sequence
             traj_seq_notes = validate_design_sequence(trajectory_sequence, num_clashes_relaxed, advanced_settings)
@@ -599,7 +670,8 @@ while True:
                 design_start_time = time.time()
 
                 ### MPNN redesign of starting binder
-                mpnn_trajectories = mpnn_gen_sequence(trajectory_pdb, binder_chain, trajectory_interface_residues, advanced_settings)
+                mpnn_trajectories = mpnn_gen_sequence(trajectory_pdb, binder_chain, trajectory_interface_residues, advanced_settings,
+                                                      clear_gpu_memory=trajectory_runtime is None)
                 
                 existing_mpnn_sequences = set()
                 if os.path.exists(mpnn_csv) and os.path.getsize(mpnn_csv) > 0:
@@ -634,13 +706,18 @@ while True:
                 # check whether any sequences are left after amino acid rejection and duplication check, and if yes proceed with prediction
                 if mpnn_sequences:
                     # add optimisation for increasing recycles if trajectory is beta sheeted
+                    prediction_settings = advanced_settings
                     if advanced_settings["optimise_beta"] and float(trajectory_beta) > 15:
-                        advanced_settings["num_recycles_validation"] = advanced_settings["optimise_beta_recycles_valid"]
+                        prediction_settings = dict(advanced_settings, num_recycles_validation=advanced_settings["optimise_beta_recycles_valid"])
 
                     ### Compile prediction models once for faster prediction of MPNN sequences
-                    clear_mem()
+                    if trajectory_runtime is None:
+                        clear_mem()
+                    else:
+                        # Collect the finished MPNN model's self-referential JIT callables.
+                        gc.collect()
                     # compile complex prediction model
-                    complex_prediction_model = mk_afdesign_model(protocol="binder", num_recycles=advanced_settings["num_recycles_validation"], data_dir=advanced_settings["af_params_dir"], 
+                    complex_prediction_model = mk_afdesign_model(protocol="binder", num_recycles=prediction_settings["num_recycles_validation"], data_dir=advanced_settings["af_params_dir"],
                                                                 use_multimer=multimer_validation, use_initial_guess=advanced_settings["predict_initial_guess"], use_initial_atom_pos=advanced_settings["predict_bigbang"])
                     if advanced_settings["predict_initial_guess"] or advanced_settings["predict_bigbang"]:
                         complex_prediction_model.prep_inputs(pdb_filename=trajectory_pdb, chain='A', binder_chain='B', binder_len=length, use_binder_template=True, rm_target_seq=advanced_settings["rm_template_seq_predict"],
@@ -651,7 +728,7 @@ while True:
 
                     # compile binder monomer prediction model
                     binder_prediction_model = mk_afdesign_model(protocol="hallucination", use_templates=False, initial_guess=False, 
-                                                                use_initial_atom_pos=False, num_recycles=advanced_settings["num_recycles_validation"], 
+                                                                use_initial_atom_pos=False, num_recycles=prediction_settings["num_recycles_validation"],
                                                                 data_dir=advanced_settings["af_params_dir"], use_multimer=multimer_validation)
                     binder_prediction_model.prep_inputs(length=length)
 
@@ -675,7 +752,7 @@ while True:
                         mpnn_complex_statistics, pass_af2_filters, early_filter_details = predict_binder_complex(complex_prediction_model,
                                                                                         mpnn_sequence['seq'], mpnn_design_name,
                                                                                         target_settings["starting_pdb"], target_settings["chains"],
-                                                                                        length, trajectory_pdb, prediction_models, advanced_settings,
+                                                                                        length, trajectory_pdb, prediction_models, prediction_settings,
                                                                                         filters, design_paths, failure_csv, use_pyrosetta=use_pyrosetta)
 
                         # if AF2 filters are not passed then skip the scoring but log the failure
@@ -770,7 +847,7 @@ while True:
                         
                         ### Predict binder alone in single sequence mode
                         binder_statistics = predict_binder_alone(binder_prediction_model, mpnn_sequence['seq'], mpnn_design_name, length,
-                                                                trajectory_pdb, binder_chain, prediction_models, advanced_settings, design_paths, 
+                                                                trajectory_pdb, binder_chain, prediction_models, prediction_settings, design_paths,
                                                                 use_pyrosetta=use_pyrosetta)
 
                         # extract RMSDs of binder to the original trajectory
@@ -908,9 +985,11 @@ while True:
                         gc.collect()
 
                         # if enough mpnn sequences of the same trajectory pass filters then stop
-                        if accepted_mpnn >= advanced_settings["max_mpnn_sequences"]:
+                        if (accepted_mpnn >= advanced_settings["max_mpnn_sequences"] or
+                                len(accepted_output_names()) >= target_settings["number_of_final_designs"]):
                             break
 
+                    del complex_prediction_model, binder_prediction_model
                     if accepted_mpnn >= 1:
                         print("Found "+str(accepted_mpnn)+" MPNN designs passing filters")
                         print("")
@@ -949,6 +1028,11 @@ while True:
         
         # Force garbage collection more frequently to prevent file descriptor accumulation
         gc.collect()
+
+if schedule_checkpoint is not None and schedule_checkpoint.inflight is not None:
+    schedule_checkpoint.finish_attempt(accepted_output_names())
+if trajectory_runtime is not None and trajectory_runtime.model is not None:
+    trajectory_runtime.invalidate()
 
 ### Script finished
 elapsed_time = time.time() - script_start_time
