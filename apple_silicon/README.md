@@ -1,6 +1,6 @@
 # FreeBindCraft on Apple Silicon
 
-FreeBindCraft runs natively on Apple Silicon Macs. AlphaFold and ProteinMPNN use the Apple GPU. Relaxation uses PyRosetta on the CPU, or OpenMM on the GPU.
+FreeBindCraft runs natively on Apple Silicon Macs. AlphaFold and ProteinMPNN use the Apple GPU via MetalJAX. Relaxation and scoring support all three backends: **`tmol` (`beta2016` on PyTorch + Metal/MPS offload)**, **`openmm`/`FASPR` (`OpenCL` GPU)**, and **CPU `pyrosetta`**.
 
 **Apple performance optimizations are enabled by default.** The installer handles the backend setup; no extra performance flags or manual patches are needed.
 
@@ -15,22 +15,23 @@ bash install_bindcraft.sh
 
 Finish the Command Line Tools installation before running the second command. Dependencies and model weights install inside the checkout; no Conda environment is needed.
 
-PyRosetta is included by default. To use OpenMM/FASPR instead:
+Running `install_bindcraft.sh` installs MetalJAX, OpenMM/FASPR, PyTorch/`tmol`, and PyRosetta by default. Calling `bash install_apple_silicon.sh` directly installs PyTorch/`tmol` and OpenMM/FASPR without PyRosetta (`--with-pyrosetta` adds it; `--no-tmol` omits PyTorch/`tmol`).
 
 ```bash
-bash install_bindcraft.sh --no-pyrosetta
+bash install_apple_silicon.sh --no-pyrosetta   # PyTorch/tmol + OpenMM/FASPR only (PyRosetta-free)
 ```
 
 To update an existing installation, pull the latest code and rerun the installer.
 
 ## Run
 
-Try the small ubiquitin example:
+Try the small ubiquitin example (using the PyRosetta-free `--backend tmol` engine or classic OpenMM/FASPR):
 
 ```bash
 ./run_apple_silicon.sh \
   --settings settings_target/ubiquitin_apple_small.json \
   --advanced settings_advanced/apple_silicon_ubiquitin_small.json \
+  --backend tmol \
   --max-attempts 1 --seed 42 --no-plots --no-animations
 ```
 
@@ -38,7 +39,7 @@ This designs a 70-residue binder against ubiquitin. Results go to `runs/ubiquiti
 
 Use your own target and advanced settings for other jobs. Change `design_path` in the target settings to choose a new output directory. No environment activation is needed.
 
-Add `--no-pyrosetta` to a run command to select OpenMM/FASPR. The launcher selects it automatically if PyRosetta is absent.
+Pass `--backend pyrosetta`, `--backend tmol`, or `--backend openmm` (or `--no-pyrosetta` for OpenMM/FASPR). If PyRosetta is omitted at install time, the launcher selects `--no-pyrosetta` unless `--backend tmol` is passed. See the [README](../README.md#scoring--relaxation-engines-pyrosetta-tmol-openmm) for the 3-engine feature matrix and M5 Max vs. RTX PRO 6000 benchmark comparison.
 
 ## Performance and memory
 

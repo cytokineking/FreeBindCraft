@@ -40,7 +40,7 @@ class AppleLauncherTests(unittest.TestCase):
                 ' json.dump({"argv":sys.argv[1:],"attention":os.getenv("METALJAX_EVO_ATTN"),'
                 '"slice":os.getenv("METALJAX_SLICE_BEFORE_CONVERT")},f)\n')
             env = {k:v for k,v in os.environ.items() if not k.startswith(
-                ('METALJAX_', 'MLX_', 'JAX_', 'PYTHON'))}
+                ('METALJAX_', 'MLX_', 'JAX_', 'OPENMM_', 'PYTHON'))}
             if inherited is not None:
                 env['METALJAX_EVO_ATTN'] = inherited
             completed = subprocess.run(['/bin/bash', str(root/'run_apple_silicon.sh'), *args],

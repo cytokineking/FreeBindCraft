@@ -1,8 +1,10 @@
 """Exercise real ColabDesign preparation without loading AF2 weights."""
 import json
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
+import zipfile
 
 import numpy as np
 from colabdesign import mk_afdesign_model
@@ -100,6 +102,83 @@ class TrajectoryRuntimeTests(unittest.TestCase):
         self.assertIsNone(self.runtime.model)
         self.assertFalse(self.runtime.lengths)
         self.assertIsNot(self.prepare(66), first)
+
+
+class ValidationModelRuntimeTests(unittest.TestCase):
+    def setUp(self):
+        self.settings = json.loads((ROOT / 'settings_advanced/default_4stage_multimer.json').read_text())
+        self.pdb = str(ROOT / 'example/ubiquitin_1ubq.pdb')
+        self.traj_pdb = str(ROOT / 'example/PDL1.pdb')
+        self.runtime = design.ValidationModelRuntime()
+        factory = patch.object(
+            design,
+            'mk_afdesign_model',
+            side_effect=lambda **kw: mk_afdesign_model(model_names=[], **kw),
+        )
+        self.build = factory.start()
+        self.addCleanup(factory.stop)
+
+    def test_complex_reused_across_trajectories_and_monomer_is_lazy(self):
+        c1 = self.runtime.get_complex_model(self.pdb, 'A', self.traj_pdb, 66, self.settings, True)
+        self.assertEqual(self.build.call_count, 1)
+        self.assertIsNone(self.runtime.binder_model)
+
+        c1._tmp['save'] = [c1.opt, c1._args, c1._params, c1._inputs]
+        c1._tmp['best'] = {'aux': {'log': {}}}
+        c1._tmp['log'] = [{'loss': 1.0}]
+        c1._tmp['traj']['seq'].append('dummy')
+        c1.aux = {'log': {}}
+        c1._inputs['prev'] = object()
+        self.runtime.release_outputs()
+        self.assertFalse(hasattr(c1, 'aux'))
+        self.assertNotIn('prev', c1._inputs)
+        self.assertNotIn('save', c1._tmp)
+        self.assertEqual(
+            c1._tmp,
+            {'traj': {'seq': [], 'xyz': [], 'plddt': [], 'pae': []}, 'log': [], 'best': {}},
+        )
+        self.assertNotIn('aux', c1._tmp['best'])
+
+        with patch.object(c1, 'prep_inputs', wraps=c1.prep_inputs) as prep_spy:
+            c2 = self.runtime.get_complex_model(self.pdb, 'A', self.traj_pdb, 66, self.settings, True)
+            self.assertIs(c2, c1)
+            self.assertEqual(prep_spy.call_count, 0)
+        self.assertEqual(self.build.call_count, 1)
+
+        b1 = self.runtime.get_binder_model(66, self.settings, True)
+        self.assertEqual(self.build.call_count, 2)
+        b1._tmp['best'] = {'aux': {}}
+        b1.aux = {'log': {}}
+        self.runtime.release_outputs()
+        self.assertFalse(hasattr(b1, 'aux'))
+        self.assertEqual(
+            b1._tmp,
+            {'traj': {'seq': [], 'xyz': [], 'plddt': [], 'pae': []}, 'log': [], 'best': {}},
+        )
+        self.assertNotIn('aux', b1._tmp['best'])
+        b2 = self.runtime.get_binder_model(66, self.settings, True)
+        self.assertIs(b2, b1)
+        self.assertEqual(self.build.call_count, 2)
+
+    def test_initial_guess_repreps_and_length_or_recycle_change_rebuilds(self):
+        guess_settings = dict(self.settings, predict_initial_guess=True)
+        with tempfile.TemporaryDirectory() as td:
+            traj_pdb = Path(td) / '3_PDL1_l66_s627125_mpnn8_model1.pdb'
+            with zipfile.ZipFile(ROOT / 'performance_data/pdl1_miniprotein/PDL1-pyrosetta.zip') as zf:
+                traj_pdb.write_bytes(zf.read('3_PDL1_l66_s627125_mpnn8_model1.pdb'))
+            c1 = self.runtime.get_complex_model(self.pdb, 'A', str(traj_pdb), 66, guess_settings, True)
+            with patch.object(c1, 'prep_inputs') as prep_spy:
+                c2 = self.runtime.get_complex_model(self.pdb, 'A', str(traj_pdb), 66, guess_settings, True)
+                self.assertIs(c2, c1)
+                self.assertEqual(prep_spy.call_count, 1)
+
+            c3 = self.runtime.get_complex_model(self.pdb, 'A', str(traj_pdb), 68, guess_settings, True)
+            self.assertIsNot(c3, c1)
+            self.assertIsNone(self.runtime.binder_model)
+
+            bumped_recycles = dict(guess_settings, num_recycles_validation=4)
+            c4 = self.runtime.get_complex_model(self.pdb, 'A', str(traj_pdb), 68, bumped_recycles, True)
+            self.assertIsNot(c4, c3)
 
 
 if __name__ == '__main__':

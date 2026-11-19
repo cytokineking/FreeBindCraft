@@ -6,12 +6,14 @@ repo_dir="$PWD"
 pkg_manager=conda
 env_name=BindCraft
 install_pyrosetta=true
+install_tmol=true
 skip_gpu_check=false
 
 usage() {
   cat <<'EOF'
 Usage: bash install_bindcraft.sh [options]
   --no-pyrosetta, -n       Omit the optional PyRosetta package
+  --no-tmol                Omit the isolated PyTorch + tmol[cu12] worker environment
   --pkg_manager, -p NAME   conda or mamba (default: conda)
   --env-name NAME          Conda environment name (default: BindCraft)
   --skip-gpu-check        Install without probing a GPU, for container builds
@@ -27,6 +29,8 @@ while [[ $# -gt 0 ]]; do
       continue ;;
     --no-pyrosetta|-n) install_pyrosetta=false; shift ;;
     --with-pyrosetta) install_pyrosetta=true; shift ;;
+    --no-tmol) install_tmol=false; shift ;;
+    --with-tmol) install_tmol=true; shift ;;
     --pkg_manager|-p|--env-name|--cuda|-c)
       [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { echo "Missing value for $1" >&2; exit 2; }
       case "$1" in
@@ -91,6 +95,16 @@ if [[ "$install_pyrosetta" == true ]]; then
   python -m pip install --no-deps --requirement installation/pyrosetta-linux-requirements.txt
 fi
 python -m pip check
+if [[ "$install_tmol" == true ]]; then
+  printf 'Installing isolated PyTorch/tmol[cu12] worker environment into %s/tmol-venv\n' "$CONDA_PREFIX"
+  if [[ ! -x "$CONDA_PREFIX/tmol-venv/bin/python" ]]; then
+    python -m venv "$CONDA_PREFIX/tmol-venv"
+  fi
+  "$CONDA_PREFIX/tmol-venv/bin/python" -m pip install --upgrade pip
+  "$CONDA_PREFIX/tmol-venv/bin/python" -m pip install --requirement installation/tmol-linux-cuda12-requirements.txt
+  "$CONDA_PREFIX/tmol-venv/bin/python" -m pip check
+  export TMOL_PYTHON="$CONDA_PREFIX/tmol-venv/bin/python"
+fi
 
 for binary in dssp sc FASPR; do
   [[ -s "functions/$binary" ]] || { echo "Missing native helper: functions/$binary" >&2; exit 1; }
@@ -126,6 +140,7 @@ fi
 
 check_args=()
 [[ "$install_pyrosetta" == true ]] || check_args+=(--no-pyrosetta)
+[[ "$install_tmol" == true ]] || check_args+=(--no-tmol)
 [[ "$skip_gpu_check" == false ]] || check_args+=(--skip-gpu-check)
 python extras/check_linux_installation.py "${check_args[@]}"
 printf '\nInstalled in %s in %s seconds.\n' "$CONDA_PREFIX" "$SECONDS"

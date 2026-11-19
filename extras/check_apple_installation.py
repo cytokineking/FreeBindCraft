@@ -19,7 +19,7 @@ import json
 import logging
 import zipfile
 from Bio.PDB import PDBParser, DSSP
-from functions import check_jax_gpu, calc_ss_percentage, score_interface, mpnn_gen_sequence
+from functions import check_jax_gpu, calc_ss_percentage, score_interface, mpnn_gen_sequence, tmol_relax_subprocess
 from functions.pr_alternative_utils import openmm_relax
 
 logging.basicConfig(level=logging.WARNING)
@@ -42,10 +42,19 @@ plat = openmm_relax(pdb, out, override_platform_order=['OpenCL'], perf_report=pe
 assert plat == 'OpenCL' and perf['faspr_success'] and perf['post_faspr_min_platform'] == 'OpenCL', perf
 metrics, aa, residues = score_interface(out, 'B', use_pyrosetta=False)
 assert metrics['interface_nres'] > 0 and residues, metrics
+tmol_out = str(folder/'relaxed_tmol.pdb')
+tmol_perf = {}
+tmol_relax_subprocess(pdb, tmol_out, perf_report=tmol_perf)
+assert os.path.isfile(tmol_out) and not tmol_perf.get('used_fallback'), tmol_perf
+tmol_metrics, _, tmol_residues = score_interface(tmol_out, 'B', backend='tmol')
+assert tmol_metrics['interface_nres'] > 0 and tmol_residues, tmol_metrics
+assert tmol_metrics['interface_packstat'] == 0.65 and tmol_metrics['interface_delta_unsat_hbonds'] == 1, tmol_metrics
+assert tmol_metrics['binder_score'] < 0 and tmol_metrics['interface_dG'] < 0, tmol_metrics
 seqs = mpnn_gen_sequence(out, 'B', residues, a)
 assert len(seqs['seq']) == 1 and len(seqs['seq'][0].replace('/', '')) == 180
 report = dict(reference='Bundled benchmark complex, not the new design',
               dssp_residues=len(dssp), secondary_structure=ss[:3], relaxation=perf,
-              interface=metrics, mpnn_sequence=seqs['seq'][0][-65:])
+              interface=metrics, tmol_relaxation=tmol_perf, tmol_interface=tmol_metrics,
+              mpnn_sequence=seqs['seq'][0][-65:])
 (folder/'report.json').write_text(json.dumps(report, indent=2, default=float)+'\n')
 print(json.dumps(report, indent=2, default=float))

@@ -62,6 +62,7 @@ def main():
     parser.add_argument('--uv', default=shutil.which('uv') or str(root/'.local/bin/uv'))
     parser.add_argument('--downloads', type=Path, default=root/'.local/downloads/metaljax')
     parser.add_argument('--with-pyrosetta', action='store_true')
+    parser.add_argument('--no-tmol', action='store_true')
     args = parser.parse_args()
     python = args.python.absolute()  # preserve a venv interpreter's symlink
     query = 'import sys; assert sys.prefix != sys.base_prefix, "Expected a virtual environment"'
@@ -76,6 +77,9 @@ def main():
     selected = f'metaljax @ {wheel.as_uri()}#sha256={digest}'
     requirements = [selected if line == expected else line for line in requirements]
     command = [args.uv, 'pip', 'sync', '--python', str(python)]
+    if not args.no_tmol:
+        requirements += [line for line in (root/'installation/tmol-apple-requirements.txt').read_text().splitlines()
+                         if line.strip() and not line.strip().startswith('#')]
     if args.with_pyrosetta:
         command += ['--find-links', 'https://west.rosettacommons.org/pyrosetta/quarterly/release/']
         requirements += [line for line in (root/'installation/pyrosetta-apple-requirements.txt').read_text().splitlines()

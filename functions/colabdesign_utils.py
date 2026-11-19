@@ -17,7 +17,7 @@ from colabdesign.af.alphafold.common import residue_constants
 from colabdesign.af.loss import get_ptm, mask_loss, get_dgram_bins, _get_con_loss
 from colabdesign.shared.utils import copy_dict
 from .biopython_utils import hotspot_residues, calculate_clash_score, calc_ss_percentage, calculate_percentages
-from .pyrosetta_utils import pr_relax, align_pdbs
+from .pyrosetta_utils import pr_relax, pr_relax_batch, align_pdbs
 from .generic_utils import update_failures
 from .logging_utils import vprint
 from .ipsae_utils import calculate_ipsae
@@ -39,6 +39,35 @@ def save_design_animation(af_model, output_path):
         return False
     finally:
         plt.close('all')
+
+def _target_pdb_key(starting_pdb):
+    """Return a stable cache key for a PDB path or inline PDB text."""
+    starting_pdb = os.fspath(starting_pdb)
+    if "\n" not in starting_pdb:
+        stat = os.stat(starting_pdb)
+        return (os.path.realpath(starting_pdb), stat.st_size, stat.st_mtime_ns)
+    return starting_pdb
+
+
+def _release_af_model_state(model, *, reset_tmp_schema=False):
+    """Clear per-prediction buffers without dropping compiled AF2 functions or weights."""
+    if model is None:
+        return
+    if hasattr(model, "_tmp") and isinstance(model._tmp, dict):
+        if "save" in model._tmp:
+            model.opt, model._args, model._params, model._inputs = model._tmp.pop("save")
+        model._tmp.clear()
+        if reset_tmp_schema:
+            model._tmp.update({
+                "traj": {"seq": [], "xyz": [], "plddt": [], "pae": []},
+                "log": [],
+                "best": {},
+            })
+    if hasattr(model, "aux"):
+        del model.aux
+    if hasattr(model, "_inputs") and isinstance(model._inputs, dict):
+        model._inputs.pop("prev", None)
+
 
 class TrajectoryDesignRuntime:
     """AF2 weights and JIT functions for one active exact binder length."""
@@ -67,17 +96,11 @@ class TrajectoryDesignRuntime:
 
     def release_outputs(self):
         """Called after the driver has consumed the finished trajectory."""
-        self.model._tmp.clear()
-        del self.model.aux
-        self.model._inputs.pop("prev", None)
+        _release_af_model_state(self.model)
 
     def prepare(self, starting_pdb, chain, hotspot, length, seed, helicity, settings):
         backend = jax.default_backend()
-        starting_pdb = os.fspath(starting_pdb)
-        target = starting_pdb  # ColabDesign also accepts PDB text.
-        if "\n" not in starting_pdb:
-            stat = os.stat(starting_pdb)
-            target = (os.path.realpath(starting_pdb), stat.st_size, stat.st_mtime_ns)
+        target = _target_pdb_key(starting_pdb)
         signature = (backend, target, chain, hotspot, settings["af_params_dir"], settings["use_multimer_design"],
                      settings["num_recycles_design"], settings["use_rg_loss"],
                      settings["use_i_ptm_loss"], settings["use_termini_distance_loss"])
@@ -132,6 +155,154 @@ class TrajectoryDesignRuntime:
         self.signature = signature
         self.lengths.add(length)
         return model
+
+
+class ValidationModelRuntime:
+    """Cached complex and lazy monomer AF2 validation models for one exact binder length."""
+
+    def __init__(self):
+        self.complex_model = None
+        self.complex_signature = None
+        self.binder_model = None
+        self.binder_signature = None
+        self.length = None
+
+    def invalidate(self):
+        """Release compiled complex/monomer validation models and collect JAX caches."""
+        if (
+            self.complex_model is None
+            and self.binder_model is None
+            and self.length is None
+        ):
+            return
+        self.complex_model = self.complex_signature = None
+        self.binder_model = self.binder_signature = None
+        self.length = None
+        gc.collect()
+        jax.clear_caches()
+        gc.collect()
+
+    def release_outputs(self):
+        """Clear transient prediction buffers while keeping compiled models warm."""
+        _release_af_model_state(self.complex_model, reset_tmp_schema=True)
+        _release_af_model_state(self.binder_model, reset_tmp_schema=True)
+
+    def get_complex_model(self, starting_pdb, chain, trajectory_pdb, length, settings, multimer_validation):
+        """Return a prepared complex validation model, reusing weights and XLA graphs when possible."""
+        backend = jax.default_backend()
+        use_trajectory_template = bool(settings["predict_initial_guess"] or settings["predict_bigbang"])
+        target_key = _target_pdb_key(starting_pdb)
+        signature = (
+            backend,
+            target_key,
+            chain,
+            settings["af_params_dir"],
+            bool(multimer_validation),
+            int(settings["num_recycles_validation"]),
+            bool(settings["predict_initial_guess"]),
+            bool(settings["predict_bigbang"]),
+            bool(settings["rm_template_seq_predict"]),
+            bool(settings["rm_template_sc_predict"]),
+            int(length),
+        )
+        crosses_boundary = (
+            self.complex_model is not None
+            and backend != "metal"
+            and (sum(self.complex_model._lengths) > 384)
+            != (self.complex_model._target_len + length > 384)
+        )
+        if self.length not in (None, length):
+            self.invalidate()
+        elif self.complex_model is not None and (signature != self.complex_signature or crosses_boundary):
+            self.complex_model = self.complex_signature = None
+            gc.collect()
+            jax.clear_caches()
+            gc.collect()
+
+        fresh = self.complex_model is None
+        try:
+            if fresh:
+                self.complex_model = mk_afdesign_model(
+                    protocol="binder",
+                    num_recycles=settings["num_recycles_validation"],
+                    data_dir=settings["af_params_dir"],
+                    use_multimer=multimer_validation,
+                    use_initial_guess=settings["predict_initial_guess"],
+                    use_initial_atom_pos=settings["predict_bigbang"],
+                )
+            else:
+                vprint(f"[AF2] Reusing validation complex model for binder length {length}")
+
+            if fresh or use_trajectory_template:
+                if use_trajectory_template:
+                    self.complex_model.prep_inputs(
+                        pdb_filename=trajectory_pdb,
+                        chain="A",
+                        binder_chain="B",
+                        binder_len=length,
+                        use_binder_template=True,
+                        rm_target_seq=settings["rm_template_seq_predict"],
+                        rm_target_sc=settings["rm_template_sc_predict"],
+                        rm_template_ic=True,
+                    )
+                else:
+                    self.complex_model.prep_inputs(
+                        pdb_filename=starting_pdb,
+                        chain=chain,
+                        binder_len=length,
+                        rm_target_seq=settings["rm_template_seq_predict"],
+                        rm_target_sc=settings["rm_template_sc_predict"],
+                    )
+        except Exception:
+            self.complex_model = self.complex_signature = None
+            gc.collect()
+            raise
+
+        self.complex_signature = signature
+        self.length = length
+        return self.complex_model
+
+    def get_binder_model(self, length, settings, multimer_validation):
+        """Lazily create or reuse the monomer validation model for ``length``."""
+        backend = jax.default_backend()
+        signature = (
+            backend,
+            settings["af_params_dir"],
+            bool(multimer_validation),
+            int(settings["num_recycles_validation"]),
+            int(length),
+        )
+        if self.length not in (None, length):
+            self.invalidate()
+        elif self.binder_model is not None and signature != self.binder_signature:
+            self.binder_model = self.binder_signature = None
+            gc.collect()
+            jax.clear_caches()
+            gc.collect()
+
+        fresh = self.binder_model is None
+        try:
+            if fresh:
+                self.binder_model = mk_afdesign_model(
+                    protocol="hallucination",
+                    use_templates=False,
+                    initial_guess=False,
+                    use_initial_atom_pos=False,
+                    num_recycles=settings["num_recycles_validation"],
+                    data_dir=settings["af_params_dir"],
+                    use_multimer=multimer_validation,
+                )
+                self.binder_model.prep_inputs(length=length)
+            else:
+                vprint(f"[AF2] Reusing validation monomer model for binder length {length}")
+        except Exception:
+            self.binder_model = self.binder_signature = None
+            gc.collect()
+            raise
+
+        self.binder_signature = signature
+        self.length = length
+        return self.binder_model
 
 
 # hallucinate a binder
@@ -342,7 +513,7 @@ def binder_hallucination(design_name, starting_pdb, chain, target_hotspot_residu
     return af_model
 
 # run prediction for binder with masked template target
-def predict_binder_complex(prediction_model, binder_sequence, mpnn_design_name, target_pdb, chain, length, trajectory_pdb, prediction_models, advanced_settings, filters, design_paths, failure_csv, seed=None, use_pyrosetta=True):
+def predict_binder_complex(prediction_model, binder_sequence, mpnn_design_name, target_pdb, chain, length, trajectory_pdb, prediction_models, advanced_settings, filters, design_paths, failure_csv, seed=None, use_pyrosetta=True, backend=None):
     prediction_stats = {}
 
     # clean sequence
@@ -412,20 +583,26 @@ def predict_binder_complex(prediction_model, binder_sequence, mpnn_design_name, 
     if filter_failures:
         update_failures(failure_csv, filter_failures)
 
-    # AF2 filters passed, contuing with relaxation
-    for model_num in prediction_models:
-        complex_pdb = os.path.join(design_paths["MPNN"], f"{mpnn_design_name}_model{model_num+1}.pdb")
-        if pass_af2_filters:
-            mpnn_relaxed = os.path.join(design_paths["MPNN/Relaxed"], f"{mpnn_design_name}_model{model_num+1}.pdb")
-            pr_relax(complex_pdb, mpnn_relaxed, use_pyrosetta=use_pyrosetta)
-        else:
+    # AF2 filters passed, continuing with relaxation
+    if pass_af2_filters:
+        relax_pairs = [
+            (
+                os.path.join(design_paths["MPNN"], f"{mpnn_design_name}_model{model_num+1}.pdb"),
+                os.path.join(design_paths["MPNN/Relaxed"], f"{mpnn_design_name}_model{model_num+1}.pdb"),
+            )
+            for model_num in prediction_models
+        ]
+        pr_relax_batch(relax_pairs, use_pyrosetta=use_pyrosetta, backend=backend)
+    else:
+        for model_num in prediction_models:
+            complex_pdb = os.path.join(design_paths["MPNN"], f"{mpnn_design_name}_model{model_num+1}.pdb")
             if os.path.exists(complex_pdb):
                 os.remove(complex_pdb)
 
     return prediction_stats, pass_af2_filters, filter_failures
 
 # run prediction for binder alone
-def predict_binder_alone(prediction_model, binder_sequence, mpnn_design_name, length, trajectory_pdb, binder_chain, prediction_models, advanced_settings, design_paths, seed=None, use_pyrosetta=True):
+def predict_binder_alone(prediction_model, binder_sequence, mpnn_design_name, length, trajectory_pdb, binder_chain, prediction_models, advanced_settings, design_paths, seed=None, use_pyrosetta=True, backend=None):
     binder_stats = {}
 
     # prepare sequence for prediction
@@ -445,7 +622,7 @@ def predict_binder_alone(prediction_model, binder_sequence, mpnn_design_name, le
             prediction_metrics = copy_dict(prediction_model.aux["log"]) # contains plddt, ptm, pae
 
             # align binder model to trajectory binder
-            align_pdbs(trajectory_pdb, binder_alone_pdb, binder_chain, "A", use_pyrosetta=use_pyrosetta)
+            align_pdbs(trajectory_pdb, binder_alone_pdb, binder_chain, "A", use_pyrosetta=use_pyrosetta, backend=backend)
 
             # extract the statistics for the model
             stats = {

@@ -1,0 +1,27 @@
+# Optional/default PyTorch and tmol add-on for the pinned Python 3.12 Apple Silicon environment.
+# Resolved cleanly alongside installation/apple-silicon-requirements.txt via uv pip compile.
+astor==0.8.1
+atomworks==3.1.0
+biotite==2.0.0
+biotraj==1.2.2
+cattrs==26.2.1
+decorator==5.3.1
+filelock==4.2.12
+flexcache==0.3
+flexparser==0.4
+frozendict==2.5.1
+jaxtyping==0.3.11
+llvmlite==0.50.0
+mpmath==1.3.0
+mypy-extensions==1.2.0
+networkx==3.7
+numba==0.68.1
+pint==0.26.2
+rdkit==2026.9.2
+setuptools==81.0.0
+sympy==1.14.0
+tmol==1.0.0
+torch==2.11.0
+typing-inspect==0.9.0
+wadler-lindig==0.1.8
+zstandard==0.25.0

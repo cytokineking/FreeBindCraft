@@ -4,20 +4,54 @@
   <img src="./free-bindcraft.png" alt="FreeBindCraft" width="720" />
 </p>
 
-This repository contains a modified version of Martin Pacesa's BindCraft (v1.52). The primary change is the introduction of an **optional PyRosetta bypass mechanism**.
+This repository contains a modified version of Martin Pacesa's BindCraft (v1.52). It adds two **PyRosetta-free** scoring/relaxation engines (`--backend tmol` using PyTorch/[tmol](https://github.com/RosettaCommons/tmol) and `--backend openmm` / `--no-pyrosetta` using OpenMM + FASPR + `sc-rs`), `ipSAE` scoring, exact-length trajectory/validation caching, and native Apple Silicon (MetalJAX/OpenCL/MPS) support.
 
 For comprehensive details on the original BindCraft pipeline, features, advanced settings, and filter explanations, please refer to the **original BindCraft repository: [https://github.com/martinpacesa/BindCraft](https://github.com/martinpacesa/BindCraft)** and the [original preprint](https://www.biorxiv.org/content/10.1101/2024.09.30.615802). This fork is hosted at: [https://github.com/cytokineking/FreeBindCraft](https://github.com/cytokineking/FreeBindCraft).
 
-## Key Modification: PyRosetta Bypass Functionality
+## Scoring & Relaxation Engines (`pyrosetta`, `tmol`, `openmm`)
 
-The `--no-pyrosetta` flag, usable during both installation and runtime, enables the following behavior:
+Select a backend at runtime with `--backend {pyrosetta,openmm,tmol}` (or `--no-pyrosetta`, which selects `openmm` for backward compatibility):
 
-*   **OpenMM Relaxation:** Structural relaxation uses an OpenMM-based protocol instead of PyRosetta's FastRelax. This includes structure preparation with PDBFixer, ramped backbone restraints, OBC2 implicit solvation, an additional short-range repulsive term to mitigate clashes, and short MD "shakes" for early stages. Integration with FASPR (Fast, Accurate, and Deterministic Protein Side-chain Packing) for side-chain repacking and further refinement. This function is GPU-accelerated and typically is 2-4x faster than the CPU-based FastRelax, depending on the platform. OpenMM and FASPR are both open-source.
-*   **Shape Complementarity (SC):** Replaced with an open-source implementation via `sc-rs` when available. See `sc-rs` project: [https://github.com/cytokineking/sc-rs](https://github.com/cytokineking/sc-rs). The results of sc-rs are nearly identical to the same calculations performed by PyRosetta.
-*   **SASA Calculations:** Surface area and derived metrics are computed using [FreeSASA](https://github.com/mittinatten/freesasa) or a Biopython Shrake–Rupley fallback. These values align closely with the PyRosetta-derived values.
-*   **Interface Residues and Alignment:** Uses Biopython-based routines for interface residue identification, RMSD, and PDB alignment.
+1. **`tmol` (`--backend tmol`, PyRosetta-free):** Executes Rosetta's [`beta2016`](https://github.com/RosettaCommons/tmol) energy function via an isolated persistent PyTorch/`tmol` daemon (`$CONDA_PREFIX/tmol-venv` on Linux CUDA, `.venv-metaljax` with Apple MPS offload on macOS). It replaces PyRosetta FastRelax (`KinematicRelaxMinimizer`), batches multi-model passing AF2 complexes (`[model1, model2]`) in one `PoseStack`, and computes real `Binder_Energy_Score`, separated/repacked `dG` (`dG/dSASA`), and energy+geometry-gated `n_InterfaceHbonds` alongside `sc-rs` shape complementarity, FreeSASA/Biopython SASA, and Biopython interface/RMSD checks.
+2. **`openmm` ("Classic" FreeBindCraft, `--backend openmm` or `--no-pyrosetta`):** Relaxes structures on GPU with Amber14 + OBC2 implicit solvent + short-range clash repulsion + MD shakes (`OpenMM`) followed by `FASPR` side-chain packing, then scores geometry via `sc-rs`, FreeSASA/Biopython SASA, and Biopython RMSDs. Rosetta-specific energetic and H-bond network metrics emit compatibility placeholders.
+3. **`pyrosetta` (`--backend pyrosetta`, default when installed without `--no-pyrosetta`):** Original Rosetta FastRelax, `InterfaceAnalyzerMover`, and `BuriedUnsatHbonds` (`DAlphaBall.gcc`). Requires a Rosetta Commons license for commercial use.
 
-**Important Note:** Rosetta-specific metrics that lack open-source equivalents are not computed; placeholder values are used where needed for compatibility with default filters. Evaluate design quality accordingly.
+### Feature & Metric Comparison Across Engines
+
+| Metric / Capability | `pyrosetta` (Rosetta) | `tmol` (PyTorch / PyRosetta-free) | `openmm` ("Classic" `--no-pyrosetta`) |
+|---|---|---|---|
+| **PyRosetta Commercial License Required** | **Yes** (non-academic) | **No** (BSD-3-Clause `tmol` / MIT deps; repo is Elastic-2.0) | **No** (MIT `FASPR` / open-source deps; repo is Elastic-2.0) |
+| **Structure Relaxation** | CPU Rosetta `FastRelax` (`beta_nov16`) | GPU **`tmol` `FastRelax`** (`KinematicRelaxMinimizer`, `beta2016`, batched `[model1, model2]`) | GPU **`OpenMM`** (Amber14 + OBC2 + MD shakes) + CPU `FASPR` |
+| **`Binder_Energy_Score`** | Rosetta `TotalEnergyMetric` | Real `tmol` `beta2016` chain energy *(~12–22% less negative than Rosetta; see note)* | Placeholder (`-1.0`) |
+| **`dG` & `dG/dSASA`** | `InterfaceAnalyzerMover` (`pack_separated=True`) | Real `tmol` `E_bound - E_separated` w/ interface `pack_rotamers` *(within ~0.1–3.7 REU on PDL1)* | Placeholders (`-10.0`, `0.0`) |
+| **`n_InterfaceHbonds` & `%`** | `InterfaceAnalyzerMover` | Real `tmol` `hbond` energy + donor-H···acceptor geometry *(exact PDL1 match)* | Placeholders (`5`, `60.0%`) |
+| **`ShapeComplementarity`** | Rosetta SC | `sc-rs` (Rust Lawrence–Colman SC) | `sc-rs` (Rust Lawrence–Colman SC) |
+| **`dSASA`, `Interface_SASA_%`, `Surface_Hydrophobicity`** | Rosetta SASA + `LayerSelector` | FreeSASA (or Biopython SR fallback) + area-weighted hydrophobicity | FreeSASA (or Biopython SR fallback) + area-weighted hydrophobicity |
+| **`n_InterfaceResidues` & `InterfaceAAs`** | Biopython 4.0 Å KD-tree | Biopython 4.0 Å KD-tree | Biopython 4.0 Å KD-tree |
+| **`PackStat`** | Rosetta `InterfaceAnalyzer` | Placeholder (`0.65`) | Placeholder (`0.65`) |
+| **`n_InterfaceUnsatHbonds` & `%`** | Rosetta `BuriedUnsatHbonds` (`DAlphaBall.gcc`) | Placeholders (`1`, `0.0%`) | Placeholders (`1`, `0.0%`) |
+| **Alignment & RMSDs** | Rosetta `AlignChainMover` / `RMSDMetric` | Biopython Cα Superimposer / unaligned RMSD | Biopython Cα Superimposer / unaligned RMSD |
+
+> **Calibration & Operational Notes:**
+> - Across the 5 bundled PDL1 complexes ([PDL1-pyrosetta.zip](performance_data/pdl1_miniprotein/PDL1-pyrosetta.zip)), `tmol` reproduces PyRosetta `interface_nres` (`25, 19, 18, 29, 22`) and `interface_interface_hbonds` (`10, 7, 5, 12, 11`) exactly, matches `interface_dG` within **0.12–3.66 REU** and `dSASA` within **1.4–2.1%**, and scores `Binder_Energy_Score` ~12–22% less negatively due to reference/terminal energy handling.
+> - A long-lived JSON-line daemon (`BINDCRAFT_TMOL_PERSISTENT=1`, opt out with `=0`) amortizes PyTorch/`tmol` initialization (~6.5s). On Linux CUDA, `--backend tmol` defaults `XLA_PYTHON_CLIENT_MEM_FRACTION=0.70` when unset so JAX leaves headroom for the ~824–912 MiB PyTorch/`tmol` worker (explicit `XLA_PYTHON_CLIENT_*` env vars always win).
+> - Bare Linux containers running `pyrosetta` must have system `libgfortran5` installed (e.g., `apt-get install libgfortran5`, already in [Dockerfile](Dockerfile)) because environment activation clears `LD_LIBRARY_PATH` when calling `functions/DAlphaBall.gcc`.
+
+### Performance Comparison (RTX PRO 6000 CUDA vs. Apple M5 Max)
+
+Measured head-to-head on the 5 H-stripped PDL1 complexes (`1_PDL1..5_PDL1` from `PDL1-pyrosetta.zip`):
+
+| Engine | RTX PRO 6000 Blackwell Call #1 Cold (Relax / Score) | RTX PRO 6000 Steady-State Mean `#2–5` (Relax / Score) | Apple M5 Max Call #1 Cold (Relax / Score) | Apple M5 Max Steady-State Mean `#2–5` (Relax / Score) | Worker Memory |
+|---|---:|---:|---:|---:|---|
+| **`tmol` (persistent)** | 10.56 s (9.49 / 1.07) | **3.47 s** (2.38 / 1.09) | 16.21 s (15.27 / 0.93) | **10.25 s** (9.37 / 0.88) | CUDA: 912 MiB VRAM / 3895 MB RSS; M5 Max: 2.7–2.9 GB RSS |
+| **`openmm` (`CUDA`/`OpenCL` + `FASPR`)** | 12.05 s (11.55 / 0.51) | **11.07 s** (10.65 / 0.42) | 15.18 s (14.84 / 0.34) | **13.83 s** (13.53 / 0.29) | Subprocess per call |
+| **`pyrosetta` (CPU + `DAlphaBall`)** | 20.69 s (18.16 / 2.53) | **18.24 s** (16.15 / 2.09) | 14.31 s (12.22 / 2.09) | **11.70 s** (9.92 / 1.78) | Host process |
+| **`tmol` (one-shot `=0`)** | 18.76 s (10.27 / 8.49) | **18.51 s** (10.34 / 8.17) | 20.08 s (15.20 / 4.88) | **18.66 s** (13.91 / 4.75) | Re-initialized every call (~6.5s cold) |
+
+* **Steady-state throughput:** Persistent `tmol` is **5.26× faster than PyRosetta** and **3.19× faster than OpenMM CUDA+FASPR** on RTX PRO 6000 Blackwell (and **1.14× faster than native arm64 PyRosetta** / **1.35× faster than OpenMM OpenCL** on Apple M5 Max).
+* **Batched `tmol` `PoseStack` relaxation scaling:** BindCraft automatically batches `[model1, model2]` (`n=2`) relaxation via `pr_relax_batch` when using `--backend tmol`. Warm in-process `PoseStack` timings on `3_PDL1_l66_s627125_mpnn8_model1.pdb` (`relax` + `score/repack`):
+  * **RTX PRO 6000 CUDA (`torch.cuda.synchronize`):** `n=1`: `1.81 s/pose` (207 MB peak VRAM) → `n=2`: **`1.31 s/pose` (1.38×, 290 MB)** → `n=4`: **`0.85 s/pose` (2.14×, 353 MB)** → `n=8`: **`0.73 s/pose` (2.46×, 492 MB)**.
+  * **Apple M5 Max (`MPS` offload):** `n=1`: `7.93 s/pose` → `n=2`: **`5.50 s/pose` (1.44×)** → `n=4`: **`4.07 s/pose` (1.95×)**.
 
 ## ipSAE Scoring
 
@@ -54,48 +88,49 @@ For the motivation behind the PyRosetta bypass, implementation details (OpenMM r
     ```
 2.  Navigate into your install folder (`cd [install_folder]`) and run the installation script. Linux x86_64, Conda or Mamba, Git, curl, a C compiler, and NVIDIA driver **575.57.08 or newer** are required.
 
-    Conda supplies Python 3.12 and native tools. The [tested pip profile](installation/linux-cuda12-requirements.txt) supplies JAX 0.11.2, NumPy 2.5.4, Flax 0.12.10, OpenMM 8.6.1, and their pinned CUDA 12.9 dependencies. A separately installed CUDA toolkit is not needed. ColabDesign and PDBFixer are pinned to tested commits.
+    Conda supplies Python 3.12 and native tools. The [tested pip profile](installation/linux-cuda12-requirements.txt) supplies JAX 0.11.2, NumPy 2.5.4, Flax 0.12.10, OpenMM 8.6.1, and their pinned CUDA 12.9 dependencies. By default, the installer also creates an isolated `$CONDA_PREFIX/tmol-venv` environment containing PyTorch 2.11.0+cu129 and [tmol](https://github.com/RosettaCommons/tmol) 1.0.0 ([tmol CUDA profile](installation/tmol-linux-cuda12-requirements.txt)) so `tmol` stays isolated from JAX's CUDA runtime.
 
     Installation script options:
     *   `--pkg_manager MANAGER`: Specify 'mamba' or 'conda' (default: 'conda').
     *   `--env-name NAME`: Choose the Conda environment name (default: `BindCraft`). Use a new name when migrating an existing Python 3.10 environment.
     *   `--no-pyrosetta`: **Use this flag to install without PyRosetta.**
+    *   `--no-tmol`: Skip creating the isolated `$CONDA_PREFIX/tmol-venv` PyTorch/`tmol[cu12]` environment.
     *   `--skip-gpu-check`: Skip GPU execution checks only when building a container image without GPU access.
     *   The legacy `--cuda` and `--fix-channels` options remain accepted. CUDA libraries now come from pip, and the installer selects conda-forge without editing your channel configuration.
 
-    **Example: PyRosetta-Free Installation**
+    **Example: PyRosetta-Free Installation (Includes `tmol` + OpenMM/FASPR)**
     ```bash
     bash install_bindcraft.sh --no-pyrosetta
     ```
 
-    **Example: Standard Installation (Includes PyRosetta)**
-    If you choose to install with PyRosetta, a license is required for commercial use.
+    **Example: Full Installation (PyRosetta + `tmol` + OpenMM/FASPR)**
+    If you choose to install with PyRosetta, a license is required for commercial use. On bare Linux containers without `apt` `libgfortran5`, install `libgfortran5` so `functions/DAlphaBall.gcc` can run (`installation/linux-activate.sh` clears `LD_LIBRARY_PATH`).
     ```bash
     bash install_bindcraft.sh
     ```
 
-The installer checks real JAX GPU gradients and an OpenMM CUDA calculation. Activation selects CUDA for JAX and OpenMM and clears `LD_LIBRARY_PATH` so an ambient toolkit cannot replace pip's CUDA libraries; deactivation restores your previous settings. Completed model weights are reused when rerunning installation. To check an installed environment again:
+The installer checks real JAX GPU gradients, OpenMM CUDA execution, `tmol` CUDA scoring, and (unless `--no-pyrosetta` is passed) PyRosetta + `DAlphaBall.gcc`. Activation selects CUDA for JAX/OpenMM, sets `TMOL_PYTHON`, and clears `LD_LIBRARY_PATH` so an ambient toolkit cannot replace pip's CUDA libraries; deactivation restores your previous settings. Completed model weights are reused when rerunning installation. To check an installed environment again:
 
 ```bash
 conda activate BindCraft
 python extras/check_linux_installation.py --no-pyrosetta
 ```
 
-Omit `--no-pyrosetta` from that check for a full installation. Installing with `--no-pyrosetta` omits the optional package; it does not uninstall PyRosetta from an existing environment.
+Omit `--no-pyrosetta` from that check for a full installation (or add `--no-tmol` if you skipped `tmol`). Installing with `--no-pyrosetta` omits the optional package; it does not uninstall PyRosetta from an existing environment.
 
 You can also run BindCraft entirely inside a Docker container without a local installation. See the Containerized usage section below for details and an interactive wrapper.
 
 ### Apple Silicon
 
-FreeBindCraft runs natively on Apple Silicon, with GPU optimizations enabled by default.
+FreeBindCraft runs natively on Apple Silicon, with MetalJAX, OpenMM/FASPR, and PyTorch/`tmol` MPS optimizations enabled by default:
 
 ```bash
 bash install_bindcraft.sh
 ./run_apple_silicon.sh --settings settings_target/ubiquitin_apple_small.json \
-  --advanced settings_advanced/apple_silicon_ubiquitin_small.json --max-attempts 1
+  --advanced settings_advanced/apple_silicon_ubiquitin_small.json --backend tmol --max-attempts 1
 ```
 
-PyRosetta is included by default; use `--no-pyrosetta` for OpenMM/FASPR.
+Running `install_bindcraft.sh` installs PyRosetta, `tmol` (PyTorch MPS offload), and OpenMM/FASPR (`install_apple_silicon.sh --no-pyrosetta` omits PyRosetta; `--no-tmol` skips PyTorch/`tmol`). Use `--backend tmol`, `--backend openmm`, or `--backend pyrosetta` (or `--no-pyrosetta` for OpenMM/FASPR).
 See the [Apple Silicon guide](apple_silicon/README.md) for setup and memory options,
 and the [M5 Max versus NVIDIA benchmarks](apple_silicon/benchmarks/README.md).
 
@@ -111,17 +146,23 @@ Change to your BindCraft installation directory:
 # cd /path/to/your/bindcraft/folder/
 ```
 
-**To use the PyRosetta bypass at runtime, include the `--no-pyrosetta` flag:**
+**To run with the PyRosetta-free `tmol` backend (`beta2016` FastRelax + real `dG` and interface H-bonds):**
 ```bash
-python -u ./bindcraft.py --settings './settings_target/your_target.json' --filters './settings_filters/default_filters.json' --advanced './settings_advanced/default_4stage_multimer.json' --no-pyrosetta
+python -u ./bindcraft.py --settings './settings_target/your_target.json' --filters './settings_filters/default_filters.json' --advanced './settings_advanced/default_4stage_multimer.json' --backend tmol
+```
+
+**To use classic OpenMM + FASPR PyRosetta bypass mode:**
+```bash
+python -u ./bindcraft.py --settings './settings_target/your_target.json' --filters './settings_filters/default_filters.json' --advanced './settings_advanced/default_4stage_multimer.json' --backend openmm
+# equivalent to --no-pyrosetta
 ```
 
 **To run with PyRosetta enabled (assuming it was installed):**
 ```bash
-python -u ./bindcraft.py --settings './settings_target/your_target.json' --filters './settings_filters/default_filters.json' --advanced './settings_advanced/default_4stage_multimer.json'
+python -u ./bindcraft.py --settings './settings_target/your_target.json' --filters './settings_filters/default_filters.json' --advanced './settings_advanced/default_4stage_multimer.json' --backend pyrosetta
 ```
 
-**Note:** Even if you installed BindCraft *with* PyRosetta, you can still run in bypass mode by adding the `--no-pyrosetta` flag at runtime.
+**Note:** Even if you installed BindCraft *with* PyRosetta, you can freely select `--backend tmol`, `--backend openmm`, or `--no-pyrosetta` at runtime.
 
 For details on configuring target settings (`--settings`), filters (`--filters`), advanced parameters (`--advanced`), and other operational aspects of BindCraft, please consult the documentation in the [original BindCraft repository](https://github.com/martinpacesa/BindCraft).
 
@@ -140,7 +181,7 @@ If you run BindCraft without `--settings` in a terminal (TTY) or pass `--interac
   - Design type: Miniprotein (≥31 aa) or Peptide (8–30 aa)
     - Peptides: default length 8–25; filters limited to `peptide_filters`, `peptide_relaxed_filters`, `no_filters`; advanced limited to peptide profiles
     - Miniproteins: default length 65–150 (min ≥31); filters limited to `default_filters`, `relaxed_filters`, `no_filters`; advanced excludes peptide profiles
-  - Verbose logging, plots, animations, and whether to run with PyRosetta
+  - Verbose logging, plots, animations, and scoring/relaxation backend (`pyrosetta`, `openmm`, or `tmol`)
   - Ranking method for final designs: `i_pTM` (default) or `ipSAE`
 - Behavior:
   - Generates a target settings JSON inside your chosen output directory and then runs the standard pipeline
@@ -150,6 +191,8 @@ If you run BindCraft without `--settings` in a terminal (TTY) or pass `--interac
 You can further control runtime behavior with these flags:
 
 - `--verbose`: Enable detailed timing/progress logs for BindCraft internals.
+- `--backend {pyrosetta,openmm,tmol}`: Explicitly select the relaxation and interface scoring engine (`pyrosetta`, `openmm`, or `tmol`).
+- `--no-pyrosetta`: Legacy shorthand selecting the `openmm` backend (cannot be combined with `--backend pyrosetta`).
 - `--debug-pdbs`: Write intermediate PDBs from OpenMM relax (`.debug_deconcat.pdb`, `.debug_pdbfixer.pdb`, `.debug_post_initial_relax.pdb`, `.debug_post_faspr.pdb`)
 - `--no-plots`: Disable saving design trajectory plots (overrides advanced settings).
 - `--no-animations`: Disable saving trajectory animations (overrides advanced settings).
@@ -180,7 +223,7 @@ With caching enabled:
 - Each visit attempts at most the configured number of trajectories at its selected length, ending when the accepted-design target is reached. Only designs that pass the final filters count; earlier confidence checks do not. The configured MPNN output limit and overall design goal still apply.
 - The accepted-design target is checked after each trajectory completes. If a trajectory produces multiple accepted designs, all count and the visit can exceed its target; the existing per-trajectory MPNN limit still applies.
 - Each bin starts at its midpoint, then explores unvisited lengths furthest from previous visits. Sweeps continue until the design goal or a stopping limit is reached. For 65–200 with a goal of 20 designs, the block order begins **82 → 116 → 150 → 184 → 65 → 99 → 133 → 167**.
-- The first trajectory at a new length compiles; subsequent trajectories reuse those calculations with fresh seeds and optimizer state. Changing length releases the old runtime and clears JAX compilation caches. There is no padding or scheduling worker process.
+- The first trajectory at a new length compiles; subsequent trajectories reuse both design and validation calculations (`complex_prediction_model` and lazily initialized `binder_prediction_model`) with fresh seeds and optimizer state. This eliminates `~29–32 s/trajectory` of CUDA XLA validation recompilation at repeated lengths (measured on RTX PRO 6000) in addition to the trajectory-design compile speedup below. Monomer validation models are constructed lazily only when at least one MPNN variant passes complex AF2 filters, saving `~14–15 s` of XLA compile on CUDA trajectories with zero passing candidates. Changing length releases both design and validation runtimes and clears JAX compilation caches. There is no padding or scheduling worker process.
 
 For example, with the default settings, a visit to length 82 advances to 116 after five unsuccessful attempts, or after a trajectory produces at least one final-filter-accepted design.
 
@@ -326,6 +369,7 @@ On completion or Ctrl+C, the container exits and is auto-removed; outputs persis
 
 ## Citations & External Tools
 
+- `tmol` (GPU FastRelax, `beta2016` scoring, and rotamer repacking): [https://github.com/RosettaCommons/tmol](https://github.com/RosettaCommons/tmol)
 - Shape Complementarity (SC): `sc-rs` — [https://github.com/cytokineking/sc-rs](https://github.com/cytokineking/sc-rs)
 - FreeSASA (SASA): [https://github.com/mittinatten/freesasa](https://github.com/mittinatten/freesasa)
 - FASPR (Side-chain Packing): [https://github.com/tommyhuangthu/FASPR](https://github.com/tommyhuangthu/FASPR)
@@ -379,3 +423,9 @@ Pull requests are welcome.
       - `stdbuf` forces line buffering for both stdout and stderr, preventing pipeline buffering delays.
       - Use POSIX character class `[[:space:]]` for portability.
       - If preserving exit code across pipes matters, consider: `set -o pipefail`.
+
+## License
+
+Source-available under the Elastic License 2.0 (Elastic-2.0). It permits royalty-free commercial use, including internal pharma/biotech research, development, production, and deployment on your own hardware or cloud. The main restriction: you may not provide the software (or a service exposing a substantial set of its functionality) to third parties as a hosted or managed service without an agreement from the copyright holder. See [LICENSE](LICENSE).
+
+FreeBindCraft adapts upstream [BindCraft](https://github.com/martinpacesa/BindCraft) (`Copyright (c) 2024 Martin Pacesa`) and [ipSAE](https://www.biorxiv.org/content/10.1101/2025.02.10.637595v1) (Roland Dunbrack, Fox Chase Cancer Center) under their MIT licenses. The `--backend tmol` engine runs on [tmol](https://github.com/RosettaCommons/tmol) and PyTorch (BSD-3-Clause), and the `--backend openmm` engine uses OpenMM, FreeSASA (MIT), `sc-rs` (MIT), and `FASPR` (MIT); optional `--backend pyrosetta` (`DAlphaBall.gcc`) remains governed by the Rosetta Commons license and requires a commercial license for non-academic use. See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for preserved upstream notices and third-party license details.

@@ -4,14 +4,16 @@ set -euo pipefail
 cd "$(dirname "$0")"
 repo_dir="$PWD"
 install_pyrosetta=false
+install_tmol=true
 for argument in "$@"; do
   case "$argument" in
     --with-pyrosetta) install_pyrosetta=true ;;
     --no-pyrosetta|-n) install_pyrosetta=false ;;
+    --no-tmol) install_tmol=false ;;
     --help|-h)
-      printf 'Usage: %s [--with-pyrosetta | --no-pyrosetta]\n' "$0"
+      printf 'Usage: %s [--with-pyrosetta | --no-pyrosetta] [--no-tmol]\n' "$0"
       printf 'Requires Apple Command Line Tools. Downloads local uv/Rust, Python dependencies,\n'
-      printf 'native helpers, and AlphaFold weights. The default omits PyRosetta.\n'
+      printf 'native helpers, and AlphaFold weights. Installs PyTorch + tmol by default; omits PyRosetta.\n'
       printf 'MetalJAX: frozen FreeBindCraft wheel by default; FREEBINDCRAFT_METALJAX=stock opts out.\n'
       printf 'FREEBINDCRAFT_METALJAX_WHEEL=/absolute/path.whl takes precedence over that selection.\n'
       exit 0 ;;
@@ -99,6 +101,7 @@ if [[ ! -x .venv-metaljax/bin/python ]]; then
 fi
 python_options=(--python "$repo_dir/.venv-metaljax/bin/python" --uv "$repo_dir/.local/bin/uv")
 [[ "$install_pyrosetta" == true ]] && python_options+=(--with-pyrosetta)
+[[ "$install_tmol" == false ]] && python_options+=(--no-tmol)
 .venv-metaljax/bin/python installation/install_apple_python.py \
   "${python_options[@]}"
 
@@ -118,13 +121,34 @@ ensure_source https://github.com/cytokineking/sc-rs.git .local/src/sc-rs befcc6c
 (cd .local/src/FASPR && clang++ -w -O3 -ffast-math -o FASPR src/*.cpp)
 install -m 644 installation/sc-rs-Cargo.lock .local/src/sc-rs/Cargo.lock
 "$CARGO_HOME/bin/cargo" build --locked --release --manifest-path .local/src/sc-rs/Cargo.toml
+create_micromamba_env() {
+  local prefix="$1" spec_file="$2"
+  if .local/bin/micromamba create --no-rc -y -p "$prefix" --file "$spec_file"; then
+    return 0
+  fi
+  echo "Primary conda-forge download failed for $spec_file; retrying via repo.prefix.dev mirror." >&2
+  rm -rf "$prefix"
+  local mirror_spec
+  mirror_spec="$(mktemp "${TMPDIR:-/tmp}/micromamba-mirror.XXXXXX")"
+  sed 's|https://conda\.anaconda\.org/conda-forge/|https://repo.prefix.dev/conda-forge/|g' \
+    "$spec_file" > "$mirror_spec"
+  if ! .local/bin/micromamba create --no-rc -y -p "$prefix" --file "$mirror_spec"; then
+    rm -f "$mirror_spec"
+    return 1
+  fi
+  rm -f "$mirror_spec"
+}
 if [[ ! -x .local/bin/micromamba ]]; then
-  curl -fLsS --retry 3 https://micro.mamba.pm/api/micromamba/osx-arm64/2.9.0 |
-    tar -xj -C .local bin/micromamba
+  if ! { curl -fLsS --retry 3 https://micro.mamba.pm/api/micromamba/osx-arm64/2.9.0 |
+      tar -xj -C .local bin/micromamba; }; then
+    echo "Primary micromamba download failed; falling back to repo.prefix.dev mirror." >&2
+    rm -f .local/bin/micromamba
+    curl -fLsS --retry 3 https://repo.prefix.dev/conda-forge/osx-arm64/micromamba-2.9.0-0.tar.bz2 |
+      tar -xj -C .local bin/micromamba
+  fi
 fi
 if [[ ! -x .local/dssp/bin/mkdssp ]]; then
-  .local/bin/micromamba create --no-rc -y -p "$repo_dir/.local/dssp" \
-    --file installation/dssp-osx-arm64.txt
+  create_micromamba_env "$repo_dir/.local/dssp" installation/dssp-osx-arm64.txt
 fi
 .local/dssp/bin/mkdssp --version
 export LIBCIFPP_DATA_DIR="$repo_dir/.local/dssp/share/libcifpp"
@@ -133,8 +157,7 @@ export LIBCIFPP_DATA_DIR="$repo_dir/.local/dssp/share/libcifpp"
 export DALPHABALL_BIN="$repo_dir/.local/src/DAlphaBall/DAlphaBall.gcc"
 if [[ "$install_pyrosetta" == true ]]; then
   if [[ ! -x .local/dalphaball-toolchain/bin/gfortran ]]; then
-    .local/bin/micromamba create --no-rc -y -p "$repo_dir/.local/dalphaball-toolchain" \
-      --file installation/dalphaball-osx-arm64.txt
+    create_micromamba_env "$repo_dir/.local/dalphaball-toolchain" installation/dalphaball-osx-arm64.txt
   fi
   .venv-metaljax/bin/python installation/build_dalphaball_apple.py
 fi
@@ -179,6 +202,28 @@ if os.environ["FREEBINDCRAFT_INSTALL_PYROSETTA"] == "true":
     assert math.isfinite(score)
     print("Native PyRosetta:", version("pyrosetta"), "test energy:", score)
 PY
+if [[ "$install_tmol" == true ]]; then
+  # Verify PyTorch + tmol in an isolated Python process separate from JAX Metal.
+  .venv-metaljax/bin/python - <<'PY'
+import math
+from importlib.metadata import version
+import torch
+import tmol
+
+device = torch.device("cpu")
+pose_stack = tmol.pose_stack_from_file("example/PDL1.pdb", device)
+sfxn = tmol.beta2016_score_function(device)
+scorer = sfxn.render_whole_pose_scoring_module(pose_stack)
+score = float(scorer(pose_stack.coords).sum().item())
+assert math.isfinite(score), score
+print(
+    "PyTorch:", version("torch"),
+    "tmol:", version("tmol"),
+    "MPS available:", torch.backends.mps.is_available(),
+    "PDL1 beta2016 energy:", round(score, 2),
+)
+PY
+fi
 .local/bin/uv pip check --python .venv-metaljax/bin/python
 printf '\nInstalled. Run: ./run_apple_silicon.sh --settings <target.json> --max-attempts 1\n'
-printf 'Use --no-pyrosetta at runtime to select OpenMM/FASPR instead of Rosetta.\n'
+printf 'Use --no-pyrosetta (OpenMM/FASPR) or --backend tmol at runtime instead of Rosetta.\n'

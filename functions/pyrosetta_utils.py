@@ -8,6 +8,9 @@ from .generic_utils import clean_pdb
 from .logging_utils import vprint
 from .biopython_utils import hotspot_residues, biopython_unaligned_rmsd, biopython_align_pdbs
 from . import pr_alternative_utils as alt
+from . import tmol_utils
+
+VALID_SCORING_BACKENDS = ("pyrosetta", "openmm", "tmol")
 
 # Conditionally import PyRosetta - will be available if initialized successfully
 pr = None
@@ -28,21 +31,32 @@ except ImportError:
     # Suppress import-time warnings; runtime messaging is handled in bindcraft.py
 
 
-def score_interface(pdb_file, binder_chain="B", use_pyrosetta=True):
+def resolve_scoring_backend(use_pyrosetta=True, backend=None):
+    """Resolve the relaxation and interface scoring backend name."""
+    if backend is not None:
+        normalized = str(backend).strip().lower()
+        if normalized not in VALID_SCORING_BACKENDS:
+            raise ValueError(
+                f"Unknown backend {backend!r}; expected one of {VALID_SCORING_BACKENDS}"
+            )
+        if normalized == "pyrosetta" and not PYROSETTA_AVAILABLE:
+            return "openmm"
+        return normalized
+    return "pyrosetta" if (use_pyrosetta and PYROSETTA_AVAILABLE) else "openmm"
+
+
+def score_interface(pdb_file, binder_chain="B", use_pyrosetta=True, backend=None):
     """
-    Calculate interface scores using PyRosetta or alternative methods.
-    Dispatches to appropriate implementation based on availability.
+    Calculate interface scores using PyRosetta, tmol, or OpenMM/Biopython alternatives.
+    Dispatches to the resolved backend implementation.
     """
     basename = os.path.basename(pdb_file)
     t0_all = time.time()
-    try:
-        # Handle PyRosetta-free mode
-        if not use_pyrosetta or not PYROSETTA_AVAILABLE:
-            return alt.pr_alternative_score_interface(pdb_file, binder_chain)
-    except ImportError as e:
-        if "pr_alternative_utils" in str(e):
-            raise ImportError("Failed to import alternative implementations module") from e
-        raise
+    resolved_backend = resolve_scoring_backend(use_pyrosetta=use_pyrosetta, backend=backend)
+    if resolved_backend == "tmol":
+        return tmol_utils.tmol_score_interface_subprocess(pdb_file, binder_chain)
+    if resolved_backend == "openmm":
+        return alt.pr_alternative_score_interface(pdb_file, binder_chain)
         
     # Regular PyRosetta mode
     vprint(f"[Rosetta-Score] Initiating PyRosetta scoring for {basename} (binder={binder_chain})")
@@ -188,11 +202,11 @@ def score_interface(pdb_file, binder_chain="B", use_pyrosetta=True):
     vprint(f"[Rosetta-Score] Completed PyRosetta scoring for {basename} in {time.time()-t0_all:.2f}s")
     return interface_scores, interface_AA, interface_residues_pdb_ids_str
 
-def align_pdbs(reference_pdb, align_pdb, reference_chain_id, align_chain_id, use_pyrosetta=True):
+def align_pdbs(reference_pdb, align_pdb, reference_chain_id, align_chain_id, use_pyrosetta=True, backend=None):
     """
     Align PDB structures using PyRosetta or Biopython.
     """
-    if not use_pyrosetta or not PYROSETTA_AVAILABLE:
+    if resolve_scoring_backend(use_pyrosetta=use_pyrosetta, backend=backend) != "pyrosetta":
         biopython_align_pdbs(reference_pdb, align_pdb, reference_chain_id, align_chain_id)
         return
         
@@ -225,11 +239,11 @@ def align_pdbs(reference_pdb, align_pdb, reference_chain_id, align_chain_id, use
     clean_pdb(align_pdb)
     vprint(f"[Rosetta-Align] Saved and cleaned aligned PDB in {time.time()-t1:.2f}s")
 
-def unaligned_rmsd(reference_pdb, align_pdb, reference_chain_id, align_chain_id, use_pyrosetta=True):
+def unaligned_rmsd(reference_pdb, align_pdb, reference_chain_id, align_chain_id, use_pyrosetta=True, backend=None):
     """
     Calculate RMSD without alignment using PyRosetta or Biopython.
     """
-    if not use_pyrosetta or not PYROSETTA_AVAILABLE:
+    if resolve_scoring_backend(use_pyrosetta=use_pyrosetta, backend=backend) != "pyrosetta":
         return biopython_unaligned_rmsd(reference_pdb, align_pdb, reference_chain_id, align_chain_id)
         
     t0 = time.time()
@@ -266,11 +280,12 @@ def unaligned_rmsd(reference_pdb, align_pdb, reference_chain_id, align_chain_id,
 
     return round(rmsd, 2)
 
-def pr_relax(pdb_file, relaxed_pdb_path, use_pyrosetta=True):
+def pr_relax(pdb_file, relaxed_pdb_path, use_pyrosetta=True, backend=None):
     """
-    Relax PDB structure using PyRosetta FastRelax or OpenMM.
+    Relax PDB structure using PyRosetta FastRelax, tmol FastRelax, or OpenMM.
     """
-    if use_pyrosetta and PYROSETTA_AVAILABLE:
+    resolved_backend = resolve_scoring_backend(use_pyrosetta=use_pyrosetta, backend=backend)
+    if resolved_backend == "pyrosetta":
         basename = os.path.basename(pdb_file)
         vprint(f"[Rosetta-Relax] Initiating FastRelax for {basename}")
         t0_all = time.time()
@@ -320,8 +335,23 @@ def pr_relax(pdb_file, relaxed_pdb_path, use_pyrosetta=True):
         clean_pdb(relaxed_pdb_path)
         vprint(f"[Rosetta-Relax] Saved and cleaned relaxed PDB in {time.time()-t0_save:.2f}s")
         vprint(f"[Rosetta-Relax] Completed FastRelax for {basename} in {time.time()-t0_all:.2f}s")
+    elif resolved_backend == "tmol":
+        tmol_utils.tmol_relax_subprocess(pdb_file, relaxed_pdb_path)
     else:
         # Quiet: direct OpenMM fallback without extra banner
         openmm_gpu = True # Default to True for GPU usage in OpenMM fallback
         # Run OpenMM relax in a fresh subprocess to fully reset OpenCL context per run
         alt.openmm_relax_subprocess(pdb_file, relaxed_pdb_path, use_gpu_relax=openmm_gpu)
+
+
+def pr_relax_batch(pdb_pairs, use_pyrosetta=True, backend=None):
+    """Relax multiple ``(input_pdb, output_pdb)`` structures, batching when tmol is selected."""
+    pairs = list(pdb_pairs)
+    if not pairs:
+        return
+    resolved_backend = resolve_scoring_backend(use_pyrosetta=use_pyrosetta, backend=backend)
+    if resolved_backend == "tmol" and len(pairs) >= 2:
+        tmol_utils.tmol_relax_batch_subprocess(pairs)
+        return
+    for pdb_file, relaxed_pdb_path in pairs:
+        pr_relax(pdb_file, relaxed_pdb_path, use_pyrosetta=use_pyrosetta, backend=backend)

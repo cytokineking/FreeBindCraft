@@ -67,6 +67,7 @@ class DriverHarness:
         self.counter = 0
         self.all_lengths = []
         self.prediction_calls = []
+        self.af_builds = []
         self.advanced = dict(design_algorithm='4stage', enable_mpnn=True, num_seqs=1,
             force_reject_AA=False, omit_AAs='', optimise_beta=False, num_recycles_validation=3,
             af_params_dir='unused', predict_initial_guess=False, predict_bigbang=False,
@@ -150,7 +151,8 @@ class DriverHarness:
             load_helicity=lambda settings:0, binder_hallucination=binder, pr_relax=lambda *a,**k:None,
             calculate_clash_score=lambda *a:0, calc_ss_percentage=lambda *a:(0,0,0,0,0,0,0,0),
             score_interface=interface, validate_design_sequence=lambda *a:'', target_pdb_rmsd=lambda *a:0,
-            insert_data=lambda *a:None, mpnn_gen_sequence=mpnn, mk_afdesign_model=lambda **k:FakeModel(),
+            insert_data=lambda *a:None, mpnn_gen_sequence=mpnn,
+            mk_afdesign_model=lambda **k:(self.af_builds.append(k.get('protocol')), FakeModel())[1],
             predict_binder_complex=predict_complex,
             predict_binder_alone=lambda *a,**k:{1:dict(metrics)},
             calculate_averages=lambda *a,**k:dict(metrics),
@@ -366,6 +368,13 @@ class DriverStateTests(unittest.TestCase):
         state = json.loads((h.root/'.trajectory-schedule.json').read_text())
         self.assertEqual(state['accepted_files'], ['old_mpnn1_model1.pdb'])
         self.assertEqual(sum(b['attempted'] for b in state['scheduler']['bins']), 1)
+
+    def test_early_reject_skips_lazy_monomer_model_construction(self):
+        h = DriverHarness(Path(self.tmp.name)/'lazy-monomer')
+        calls = h.run(['early_reject', 'success'], goal=1, max_attempts=2, cache=False)
+        self.assertEqual([c[1] for c in calls], ['early_reject', 'success'])
+        self.assertEqual(h.af_builds.count('binder'), 2)
+        self.assertEqual(h.af_builds.count('hallucination'), 1)
 
 
 if __name__ == '__main__':

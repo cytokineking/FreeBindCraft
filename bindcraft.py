@@ -83,6 +83,9 @@ parser.add_argument('--advanced', '-a', type=str, default='./settings_advanced/d
                     help='Path to the advanced.json file with additional design settings. If not provided, default will be used.')
 parser.add_argument('--no-pyrosetta', action='store_true',
                     help='Use OpenMM relaxation and open-source scoring instead of PyRosetta')
+parser.add_argument('--backend', type=str, default=None,
+                    choices=['pyrosetta', 'openmm', 'tmol'],
+                    help='Relaxation and scoring backend (pyrosetta, openmm, or tmol; default follows --no-pyrosetta / PyRosetta availability)')
 parser.add_argument('--max-attempts', type=int, default=None,
                     help='Stop after this many new trajectories, including rejected ones')
 parser.add_argument('--trajectory-cache', action=argparse.BooleanOptionalAction, default=None,
@@ -290,11 +293,21 @@ def _prompt_interactive_and_prepare_args(args):
         verbose = _yes_no("Enable verbose output?", default_yes=False)
         plots_on = _yes_no("Enable saving plots?", default_yes=True)
         animations_on = _yes_no("Enable saving animations?", default_yes=True)
-        run_with_pyrosetta = _yes_no("Run with PyRosetta?", default_yes=True)
-        
-        # Only ask about debug PDbs if not using PyRosetta (since debug PDbs are for OpenMM relax)
+        print("\nScoring/relaxation backend:")
+        print("1. pyrosetta (Rosetta FastRelax & InterfaceAnalyzer)")
+        print("2. openmm (OpenMM + FASPR + Biopython/FreeSASA/sc-rs)")
+        print("3. tmol (PyTorch/tmol FastRelax & scoring + OpenMM/Biopython/sc-rs fallbacks)")
+        backend_default = '1' if PYROSETTA_AVAILABLE else ('3' if is_tmol_available() else '2')
+        backend_choice = _input_with_default(f"Choose backend (press Enter for {backend_default}):", backend_default).strip().lower()
+        backend_map = {'1': 'pyrosetta', 'pyrosetta': 'pyrosetta',
+                       '2': 'openmm', 'openmm': 'openmm',
+                       '3': 'tmol', 'tmol': 'tmol'}
+        selected_backend = backend_map.get(backend_choice, backend_map[backend_default])
+        run_with_pyrosetta = (selected_backend == 'pyrosetta')
+
+        # Only ask about debug PDbs when using OpenMM relax
         debug_pdbs = False
-        if not run_with_pyrosetta:
+        if selected_backend == 'openmm':
             debug_pdbs = _yes_no("Write intermediate debug PDBs during OpenMM relax?", default_yes=False)
 
         # Ranking method selection
@@ -320,11 +333,11 @@ def _prompt_interactive_and_prepare_args(args):
         print(f"Filter Setting: {os.path.splitext(os.path.basename(selected_filter))[0]}")
         print(f"Advanced Setting: {os.path.splitext(os.path.basename(selected_advanced))[0]}")
         print(f"Verbose: {'Yes' if verbose else 'No'}")
-        if not run_with_pyrosetta:
+        if selected_backend == 'openmm':
             print(f"Debug PDbs: {'Yes' if debug_pdbs else 'No'}")
         print(f"Plots: {'On' if plots_on else 'Off'}")
         print(f"Animations: {'On' if animations_on else 'Off'}")
-        print(f"PyRosetta: {'On' if run_with_pyrosetta else 'Off'}")
+        print(f"Backend: {selected_backend}")
         print(f"Ranking Method: {rank_by_metric}")
 
         if _yes_no("Proceed with these settings?", default_yes=True):
@@ -362,6 +375,7 @@ def _prompt_interactive_and_prepare_args(args):
     args.no_plots = (not plots_on)
     args.no_animations = (not animations_on)
     args.no_pyrosetta = (not run_with_pyrosetta)
+    args.backend = selected_backend
     args.rank_by = rank_by_metric
 
     return args
@@ -392,6 +406,15 @@ for noisy_logger in (
 if args.verbose:
     logging.getLogger("functions").setLevel(logging.DEBUG)
     logging.getLogger("bindcraft").setLevel(logging.DEBUG)
+
+# Leave CUDA VRAM headroom for the persistent tmol worker (~0.9 GiB) alongside JAX.
+if (
+    getattr(args, "backend", None) == "tmol"
+    and os.environ.get("JAX_PLATFORMS", "").strip().lower() != "metal"
+    and "XLA_PYTHON_CLIENT_MEM_FRACTION" not in os.environ
+    and "XLA_PYTHON_CLIENT_PREALLOCATE" not in os.environ
+):
+    os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.70"
 
 # Check if JAX-capable GPU is available, otherwise exit (after interactive/container handling)
 check_jax_gpu()
@@ -475,11 +498,34 @@ create_dataframe(rejected_mpnn_full_stats_csv, rejected_stats_columns)
 ####################################
 ####################################
 ####################################
-### initialise PyRosetta if not disabled
+### initialise scoring and relaxation backend
 use_pyrosetta = False
+scoring_backend = "openmm"
+requested_backend = getattr(args, "backend", None)
 
-if args.no_pyrosetta:
+if requested_backend == "pyrosetta" and args.no_pyrosetta:
+    print("Error: --backend pyrosetta cannot be combined with --no-pyrosetta.")
+    sys.exit(1)
+
+if requested_backend == "tmol":
+    if not is_tmol_available():
+        print(
+            "Error: --backend tmol requested, but tmol/PyTorch are not available in "
+            f"{resolve_tmol_python()}. Re-run install_apple_silicon.sh or install_linux.sh "
+            "without --no-tmol (or set TMOL_PYTHON)."
+        )
+        sys.exit(1)
+    scoring_backend = "tmol"
+    print(
+        "Running with tmol relaxation/scoring backend "
+        "(PyRosetta-free; falling back to OpenMM/Biopython/FreeSASA/sc-rs where needed)."
+    )
+elif requested_backend == "openmm":
+    scoring_backend = "openmm"
+    print("Running in PyRosetta-free mode (OpenMM/Biopython backend).")
+elif args.no_pyrosetta:
     # Quiet when user explicitly disables PyRosetta
+    scoring_backend = "openmm"
     print("Running in PyRosetta-free mode as requested by --no-pyrosetta flag.")
 else:
     if 'PYROSETTA_AVAILABLE' in globals() and PYROSETTA_AVAILABLE and pr is not None:
@@ -487,11 +533,15 @@ else:
             pr.init(f'-ignore_unrecognized_res -ignore_zero_occupancy -mute all -holes:dalphaball {advanced_settings["dalphaball_path"]} -corrections::beta_nov16 true -relax:default_repeats 1')
             print("PyRosetta initialized successfully.")
             use_pyrosetta = True
+            scoring_backend = "pyrosetta"
         except Exception as e:
             print(f"PyRosetta detected but failed to initialize: {e}")
             print("Falling back to OpenMM and Biopython routines.")
     else:
-        print("PyRosetta not found. Using OpenMM and Biopython routines.")
+        if requested_backend == "pyrosetta":
+            print("PyRosetta requested but not installed. Falling back to OpenMM and Biopython routines.")
+        else:
+            print("PyRosetta not found. Using OpenMM and Biopython routines.")
 
 # Ensure binaries are executable with correct PyRosetta mode
 ensure_binaries_executable(use_pyrosetta=use_pyrosetta)
@@ -503,10 +553,12 @@ print(f"Filtering designs based on {filters_file}")
 ####################################
 # initialise counters
 script_start_time = time.time()
+scoring_backend = globals().get("scoring_backend")
 trajectory_n = 1
 accepted_designs = 0
 attempted_trajectories = 0
 trajectory_runtime = TrajectoryDesignRuntime() if cache_enabled else None
+validation_runtime = ValidationModelRuntime() if (cache_enabled and "ValidationModelRuntime" in globals()) else None
 length_scheduler = None
 schedule_checkpoint = None
 schedule_identity = scheduling_identity(target_settings, advanced_settings, filters) if cache_enabled else None
@@ -595,6 +647,8 @@ while True:
                 continue
         attempted_trajectories += 1
         print("Starting trajectory: "+design_name)
+        if validation_runtime is not None and validation_runtime.length not in (None, length):
+            validation_runtime.invalidate()
 
         ### Begin binder hallucination
         trajectory = binder_hallucination(design_name, target_settings["starting_pdb"], target_settings["chains"],
@@ -623,7 +677,7 @@ while True:
         if not terminated:
             # Relax binder to calculate statistics
             trajectory_relaxed = os.path.join(design_paths["Trajectory/Relaxed"], design_name + ".pdb")
-            pr_relax(trajectory_pdb, trajectory_relaxed, use_pyrosetta=use_pyrosetta)
+            pr_relax(trajectory_pdb, trajectory_relaxed, use_pyrosetta=use_pyrosetta, backend=scoring_backend)
 
             # define binder chain, placeholder in case multi-chain parsing in ColabDesign gets changed
             binder_chain = "B"
@@ -636,7 +690,7 @@ while True:
             trajectory_alpha, trajectory_beta, trajectory_loops, trajectory_alpha_interface, trajectory_beta_interface, trajectory_loops_interface, trajectory_i_plddt, trajectory_ss_plddt = calc_ss_percentage(trajectory_pdb, advanced_settings, binder_chain)
 
             # analyze interface scores for relaxed af2 trajectory
-            trajectory_interface_scores, trajectory_interface_AA, trajectory_interface_residues = score_interface(trajectory_relaxed, binder_chain, use_pyrosetta=use_pyrosetta)
+            trajectory_interface_scores, trajectory_interface_AA, trajectory_interface_residues = score_interface(trajectory_relaxed, binder_chain, use_pyrosetta=use_pyrosetta, backend=scoring_backend)
 
             # analyze sequence
             traj_seq_notes = validate_design_sequence(trajectory_sequence, num_clashes_relaxed, advanced_settings)
@@ -710,27 +764,35 @@ while True:
                     if advanced_settings["optimise_beta"] and float(trajectory_beta) > 15:
                         prediction_settings = dict(advanced_settings, num_recycles_validation=advanced_settings["optimise_beta_recycles_valid"])
 
-                    ### Compile prediction models once for faster prediction of MPNN sequences
-                    if trajectory_runtime is None:
-                        clear_mem()
-                    else:
-                        # Collect the finished MPNN model's self-referential JIT callables.
+                    ### Compile prediction models once per length for faster prediction of MPNN sequences
+                    if validation_runtime is not None:
                         gc.collect()
-                    # compile complex prediction model
-                    complex_prediction_model = mk_afdesign_model(protocol="binder", num_recycles=prediction_settings["num_recycles_validation"], data_dir=advanced_settings["af_params_dir"],
-                                                                use_multimer=multimer_validation, use_initial_guess=advanced_settings["predict_initial_guess"], use_initial_atom_pos=advanced_settings["predict_bigbang"])
-                    if advanced_settings["predict_initial_guess"] or advanced_settings["predict_bigbang"]:
-                        complex_prediction_model.prep_inputs(pdb_filename=trajectory_pdb, chain='A', binder_chain='B', binder_len=length, use_binder_template=True, rm_target_seq=advanced_settings["rm_template_seq_predict"],
-                                                            rm_target_sc=advanced_settings["rm_template_sc_predict"], rm_template_ic=True)
+                        complex_prediction_model = validation_runtime.get_complex_model(
+                            target_settings["starting_pdb"],
+                            target_settings["chains"],
+                            trajectory_pdb,
+                            length,
+                            prediction_settings,
+                            multimer_validation,
+                        )
                     else:
-                        complex_prediction_model.prep_inputs(pdb_filename=target_settings["starting_pdb"], chain=target_settings["chains"], binder_len=length, rm_target_seq=advanced_settings["rm_template_seq_predict"],
-                                                            rm_target_sc=advanced_settings["rm_template_sc_predict"])
+                        if trajectory_runtime is None:
+                            clear_mem()
+                        else:
+                            # Collect the finished MPNN model's self-referential JIT callables.
+                            gc.collect()
+                        # compile complex prediction model
+                        complex_prediction_model = mk_afdesign_model(protocol="binder", num_recycles=prediction_settings["num_recycles_validation"], data_dir=advanced_settings["af_params_dir"],
+                                                                    use_multimer=multimer_validation, use_initial_guess=advanced_settings["predict_initial_guess"], use_initial_atom_pos=advanced_settings["predict_bigbang"])
+                        if advanced_settings["predict_initial_guess"] or advanced_settings["predict_bigbang"]:
+                            complex_prediction_model.prep_inputs(pdb_filename=trajectory_pdb, chain='A', binder_chain='B', binder_len=length, use_binder_template=True, rm_target_seq=advanced_settings["rm_template_seq_predict"],
+                                                                rm_target_sc=advanced_settings["rm_template_sc_predict"], rm_template_ic=True)
+                        else:
+                            complex_prediction_model.prep_inputs(pdb_filename=target_settings["starting_pdb"], chain=target_settings["chains"], binder_len=length, rm_target_seq=advanced_settings["rm_template_seq_predict"],
+                                                                rm_target_sc=advanced_settings["rm_template_sc_predict"])
 
-                    # compile binder monomer prediction model
-                    binder_prediction_model = mk_afdesign_model(protocol="hallucination", use_templates=False, initial_guess=False, 
-                                                                use_initial_atom_pos=False, num_recycles=prediction_settings["num_recycles_validation"],
-                                                                data_dir=advanced_settings["af_params_dir"], use_multimer=multimer_validation)
-                    binder_prediction_model.prep_inputs(length=length)
+                    # Instantiate binder monomer prediction model lazily only when an MPNN sequence passes complex AF2 filters
+                    binder_prediction_model = None
 
                     # iterate over designed sequences        
                     for mpnn_sequence in mpnn_sequences:
@@ -753,7 +815,8 @@ while True:
                                                                                         mpnn_sequence['seq'], mpnn_design_name,
                                                                                         target_settings["starting_pdb"], target_settings["chains"],
                                                                                         length, trajectory_pdb, prediction_models, prediction_settings,
-                                                                                        filters, design_paths, failure_csv, use_pyrosetta=use_pyrosetta)
+                                                                                        filters, design_paths, failure_csv, use_pyrosetta=use_pyrosetta,
+                                                                                        backend=scoring_backend)
 
                         # if AF2 filters are not passed then skip the scoring but log the failure
                         if not pass_af2_filters:
@@ -796,13 +859,13 @@ while True:
                                 num_clashes_mpnn_relaxed = calculate_clash_score(mpnn_design_relaxed)
 
                                 # analyze interface scores for relaxed af2 trajectory
-                                mpnn_interface_scores, mpnn_interface_AA, mpnn_interface_residues = score_interface(mpnn_design_relaxed, binder_chain, use_pyrosetta=use_pyrosetta)
+                                mpnn_interface_scores, mpnn_interface_AA, mpnn_interface_residues = score_interface(mpnn_design_relaxed, binder_chain, use_pyrosetta=use_pyrosetta, backend=scoring_backend)
 
                                 # secondary structure content of starting trajectory binder
                                 mpnn_alpha, mpnn_beta, mpnn_loops, mpnn_alpha_interface, mpnn_beta_interface, mpnn_loops_interface, mpnn_i_plddt, mpnn_ss_plddt = calc_ss_percentage(mpnn_design_pdb, advanced_settings, binder_chain)
                                 
                                 # unaligned RMSD calculate to determine if binder is in the designed binding site
-                                rmsd_site = unaligned_rmsd(trajectory_pdb, mpnn_design_pdb, binder_chain, binder_chain, use_pyrosetta=use_pyrosetta)
+                                rmsd_site = unaligned_rmsd(trajectory_pdb, mpnn_design_pdb, binder_chain, binder_chain, use_pyrosetta=use_pyrosetta, backend=scoring_backend)
 
                                 # calculate RMSD of target compared to input PDB
                                 target_rmsd = target_pdb_rmsd(mpnn_design_pdb, target_settings["starting_pdb"], target_settings["chains"])
@@ -845,17 +908,29 @@ while True:
                         # calculate complex averages
                         mpnn_complex_averages = calculate_averages(mpnn_complex_statistics, handle_aa=True)
                         
-                        ### Predict binder alone in single sequence mode
+                        ### Predict binder alone in single sequence mode (lazy model instantiation)
+                        if binder_prediction_model is None:
+                            if validation_runtime is not None:
+                                binder_prediction_model = validation_runtime.get_binder_model(
+                                    length,
+                                    prediction_settings,
+                                    multimer_validation,
+                                )
+                            else:
+                                binder_prediction_model = mk_afdesign_model(protocol="hallucination", use_templates=False, initial_guess=False,
+                                                                            use_initial_atom_pos=False, num_recycles=prediction_settings["num_recycles_validation"],
+                                                                            data_dir=advanced_settings["af_params_dir"], use_multimer=multimer_validation)
+                                binder_prediction_model.prep_inputs(length=length)
                         binder_statistics = predict_binder_alone(binder_prediction_model, mpnn_sequence['seq'], mpnn_design_name, length,
                                                                 trajectory_pdb, binder_chain, prediction_models, prediction_settings, design_paths,
-                                                                use_pyrosetta=use_pyrosetta)
+                                                                use_pyrosetta=use_pyrosetta, backend=scoring_backend)
 
                         # extract RMSDs of binder to the original trajectory
                         for model_num in prediction_models:
                             mpnn_binder_pdb = os.path.join(design_paths["MPNN/Binder"], f"{mpnn_design_name}_model{model_num+1}.pdb")
 
                             if os.path.exists(mpnn_binder_pdb):
-                                rmsd_binder = unaligned_rmsd(trajectory_pdb, mpnn_binder_pdb, binder_chain, "A", use_pyrosetta=use_pyrosetta)
+                                rmsd_binder = unaligned_rmsd(trajectory_pdb, mpnn_binder_pdb, binder_chain, "A", use_pyrosetta=use_pyrosetta, backend=scoring_backend)
 
                             # append to statistics
                             binder_statistics[model_num+1].update({
@@ -989,7 +1064,12 @@ while True:
                                 len(accepted_output_names()) >= target_settings["number_of_final_designs"]):
                             break
 
-                    del complex_prediction_model, binder_prediction_model
+                    if validation_runtime is not None:
+                        validation_runtime.release_outputs()
+                    else:
+                        del complex_prediction_model
+                        if binder_prediction_model is not None:
+                            del binder_prediction_model
                     if accepted_mpnn >= 1:
                         print("Found "+str(accepted_mpnn)+" MPNN designs passing filters")
                         print("")
@@ -1033,6 +1113,8 @@ if schedule_checkpoint is not None and schedule_checkpoint.inflight is not None:
     schedule_checkpoint.finish_attempt(accepted_output_names())
 if trajectory_runtime is not None and trajectory_runtime.model is not None:
     trajectory_runtime.invalidate()
+if validation_runtime is not None:
+    validation_runtime.invalidate()
 
 ### Script finished
 elapsed_time = time.time() - script_start_time

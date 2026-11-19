@@ -52,9 +52,13 @@ RUN chmod +x /app/functions/dssp || true && \
 # The installer supplies the pinned pip CUDA 12 profile; builds need no GPU.
 # Allow toggling PyRosetta install at build-time
 ARG WITH_PYROSETTA=false
-ENV WITH_PYROSETTA=${WITH_PYROSETTA}
+ARG WITH_TMOL=true
+ENV WITH_PYROSETTA=${WITH_PYROSETTA} \
+    WITH_TMOL=${WITH_TMOL}
 RUN bash -lc 'source ${CONDA_DIR}/etc/profile.d/conda.sh && \
-    EXTRA=""; if [ "${WITH_PYROSETTA}" != "true" ]; then EXTRA="--no-pyrosetta"; fi; \
+    EXTRA=""; \
+    if [ "${WITH_PYROSETTA}" != "true" ]; then EXTRA="--no-pyrosetta"; fi; \
+    if [ "${WITH_TMOL}" != "true" ]; then EXTRA="${EXTRA} --no-tmol"; fi; \
     bash /app/install_bindcraft.sh --pkg_manager conda --skip-gpu-check ${EXTRA} && \
     conda clean -afy && rm -rf /root/.cache/pip'
 
@@ -63,7 +67,8 @@ ENV PATH=${CONDA_DIR}/envs/BindCraft/bin:${CONDA_DIR}/bin:${PATH} \
     LD_LIBRARY_PATH="" \
     JAX_PLATFORMS=cuda \
     PYTHONUNBUFFERED=1 \
-    BINDCRAFT_HOME=/app
+    BINDCRAFT_HOME=/app \
+    TMOL_PYTHON=${CONDA_DIR}/envs/BindCraft/tmol-venv/bin/python
 
 # Use the CUDA plugin shipped with the tested OpenMM profile.
 ENV OPENMM_PLATFORM_ORDER=CUDA \

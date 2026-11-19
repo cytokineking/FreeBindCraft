@@ -248,7 +248,17 @@ def main() -> None:
         verbose = yes_no("Enable verbose output?", default_yes=False)
         plots_on = yes_no("Enable saving plots?", default_yes=True)
         animations_on = yes_no("Enable saving animations?", default_yes=True)
-        run_with_pyrosetta = yes_no("Run with PyRosetta?", default_yes=True)
+        print("\nScoring/relaxation backend:")
+        print("1. pyrosetta (Rosetta FastRelax & InterfaceAnalyzer)")
+        print("2. openmm (OpenMM + FASPR + Biopython/FreeSASA/sc-rs)")
+        print("3. tmol (PyTorch/tmol FastRelax & scoring + OpenMM/Biopython/sc-rs fallbacks)")
+        backend_choice = input_with_default("Choose backend (press Enter for 1/pyrosetta):", "1").strip().lower()
+        backend_map = {
+            '1': 'pyrosetta', 'pyrosetta': 'pyrosetta',
+            '2': 'openmm', 'openmm': 'openmm',
+            '3': 'tmol', 'tmol': 'tmol',
+        }
+        selected_backend = backend_map.get(backend_choice, 'pyrosetta')
 
         # Ranking method selection
         print("\nRanking method for final designs:")
@@ -277,7 +287,7 @@ def main() -> None:
         print(f"Verbose: {'Yes' if verbose else 'No'}")
         print(f"Plots: {'On' if plots_on else 'Off'}")
         print(f"Animations: {'On' if animations_on else 'Off'}")
-        print(f"PyRosetta: {'On' if run_with_pyrosetta else 'Off'}")
+        print(f"Backend: {selected_backend}")
         print(f"Ranking Method: {rank_by_metric}")
 
         if yes_no("Proceed with these settings?", default_yes=True):
@@ -321,8 +331,10 @@ def main() -> None:
                         "-s", settings_path_out,
                         "-f", f"/app/settings_filters/{selected_filter_name}.json",
                         "-a", f"/app/settings_advanced/{selected_adv_name}.json"])
-            if not run_with_pyrosetta:
+            if selected_backend == 'openmm':
                 cmd.append("--no-pyrosetta")
+            elif selected_backend == 'tmol':
+                cmd.extend(["--backend", "tmol"])
             if verbose:
                 cmd.append("--verbose")
             if not plots_on:
